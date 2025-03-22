@@ -8,9 +8,10 @@ import Control.Monad
 import Data.Bits
 import Data.List
 import Data.Ord
-import Data.Set qualified as Set
 import Data.Map (Map)
 import Data.Map.Strict qualified as Map
+import Data.Set (Set)
+import Data.Set qualified as Set
 import System.Environment
 import Debug.Trace
 import Data.Array.Unboxed
@@ -76,23 +77,27 @@ type Config = (State, Tape)
 data Rule = (State, Symbol) :-> (State, Symbol, Dir)
   deriving ( Eq, Ord, Show )
 
+type Machine = [Rule]
+
 rule :: Rule -> Config -> Maybe Config
 rule ((s0,x0) :-> (s1,x1,d)) (s, tape)
   | s0 == s && x0 == look tape = Just (s1, move d (write x1 tape))
   | otherwise                  = Nothing
 
-rules :: [Rule] -> Config -> Maybe Config
+rules :: Machine -> Config -> Maybe Config
 rules rls conf = foldr (<|>) Nothing [ rule r conf | r <- rls ]
 
-------------------------------------------------------------------
--- running a set of rules to completion
+-- Running a set of rules to completion -----------------------------------
 
-run :: [Rule] -> Int -> Config -> (Int, Config)
+initConf :: Config
+initConf = (A, tape0)
+
+run :: Machine -> Int -> Config -> (Int, Config)
 run rls n conf = n `seq` case rules rls conf of
                            Nothing    -> (n, conf)
                            Just conf' -> run rls (n+1) conf'
 
-vizrun :: Int -> Int -> [Rule] -> Int -> Config -> IO (Int, Config)
+vizrun :: Int -> Int -> Machine -> Int -> Config -> IO (Int, Config)
 vizrun w 0 _ n conf = do
   putStrLn "Out of fuel!"
   pure (n, conf)
@@ -107,10 +112,13 @@ vizrun w fuel rls n conf@(s, Tape ln ls rs) =
        Nothing    -> return (n, conf)
        Just conf' -> vizrun w (fuel - 1) rls (n + 1) conf'
 
-score :: [Rule] -> Int
-score rs = fst (run rs 0 (A,tape0))
+vrun :: Int -> Machine -> IO ()
+vrun n m = vizrun 200 n m 0 initConf >>= print . fst
 
--- Running up to a limit --------------------------------------------------
+score :: Machine -> Int
+score rs = fst (run rs 0 initConf)
+
+-- Smarter running --------------------------------------------------------
 
 data Reason = GiveUp | StuckLeft | RunAway | NoPath | Loop | TooWide
   deriving (Eq, Ord, Show)
@@ -172,18 +180,21 @@ tapeSize :: Tape -> Int
 tapeSize (Tape n ls rs) = n + length rs
 
 runTo :: Int -> Machine -> Either Reason Int
-runTo fuel m = go fuel 0 mempty (A, tape0)
+runTo fuel = fst . runTo' () (\ _ _ -> id) fuel
+
+runTo' :: s -> (Int -> Config -> s -> s) -> Int -> Machine -> (Either Reason Int, s)
+runTo' s0 updS fuel m = go s0 fuel 0 mempty (A, tape0)
   where
     loop = loopAnalysis m
-    go 0 n seen conf = Left GiveUp
-    go fuel !n seen conf@(_, tape)
-      | shouldCache, Set.member conf seen = Left Loop
+    go s 0 n seen conf = (Left GiveUp, s)
+    go !s fuel !n seen conf@(_, tape)
+      | shouldCache, Set.member conf seen = (Left Loop, s)
       | otherwise = case rules m conf of
-          Nothing    -> Right n
+          Nothing    -> (Right n, s)
           Just conf' ->
             case loopCheck loop n conf conf' of
-              Just reason -> Left reason
-              Nothing     -> go (fuel - 1) (n + 1) seen' conf'
+              Just reason -> (Left reason, s)
+              Nothing     -> go (updS n conf s) (fuel - 1) (n + 1) seen' conf'
       where
         shouldCache = n < 25 && sz <= 5
         sz = tapeSize tape
@@ -197,6 +208,12 @@ traceRun m = go (A, tape0)
       case rules m conf of
         Nothing    -> []
         Just conf' -> conf : go conf'
+
+unvisited :: Int -> Machine -> Set (State, Symbol)
+unvisited fuel m = Set.difference allStates visited
+  where
+    allStates = Set.fromList [ i | i :-> _ <- m ]
+    visited = snd $ runTo' mempty (\ _ (s, tape) -> Set.insert (s, look tape)) fuel m
 
 -- Compiled machines ------------------------------------------------------
 
@@ -238,15 +255,176 @@ compile (sort -> rules) = Compiled
 --         d  = directions cm `unsafeAt` ix
 --         tape' = move (toEnum d) (write o tape)
 
-------------------------------------------------------------------
+-- Skeletons --------------------------------------------------------------
 
-vrun :: Int -> Machine -> IO ()
-vrun n m = vizrun 200 n m 0 (A, tape0) >>= print . fst
+data RuleSkeleton = (State, Symbol) :=> State
+  deriving (Show, Eq, Ord)
+type Skeleton = [RuleSkeleton]
 
--- main :: IO ()
--- main = vrun example -- vizrun 80 example 0 (A,tape0) >>= print . fst
+-- Is the halting state reachable from state reachable?
+hReachable :: Skeleton -> Bool
+hReachable m = all (Set.member H) (reachability m)
 
-type Machine = [Rule]
+reachability :: Skeleton -> Map State (Set State)
+reachability m = go $ Map.unionsWith (<>) [ Map.singleton s (Set.singleton s1) | (s, _) :=> s1 <- m ]
+  where
+    go g | g == g'   = g
+         | otherwise = go g'
+      where
+        g' = Map.unionsWith (<>) $ g : [ Map.singleton s (g Map.! s1)
+                                       | (s, _) :=> s1 <- m, s1 /= H ]
+
+-- Enumerating machines ---------------------------------------------------
+
+-- Number of spines
+--  n        no-opt      spines      H-reach
+--  1             1           1            1
+--  2            24          16           15
+--  3         1,215         297          265
+--  4       114,688       7,433        6,438
+--  5    17,578,125     228,045      199,319
+enumSkeletons :: Int -> [Skeleton]
+enumSkeletons n = filter postChecks $ go False [A] (tail states) [] inputs
+  where
+    states = take n [A ..]
+    inputs = [ (s, i) | s <- states, i <- [O, I] ]
+
+    postChecks spine
+      | not $ hReachable spine = False
+      | otherwise              = True
+
+    go halted old new acc [] = [reverse acc | halted]
+    go halted old new acc ((s, i) : is) = do
+      -- If we gotten to s and it's still new, it's won't be reachable!
+      guard $ notElem s new
+      -- At most one halting transition and only consider the first of the "new" states
+      s' <- [ H | not halted ] ++ take 1 new ++ old
+      when (s' == H) $ guard $ (s, i) /= (A, O)
+      let (old', new')
+            | [s'] == take 1 new = (s' : old, drop 1 new)
+            | otherwise          = (old, new)
+          rule = (s, i) :=> s'
+      go (halted || s' == H) old' new' (rule : acc) is
+
+fillSkeleton :: Skeleton -> [Machine]
+fillSkeleton = go False []
+  where
+    go one acc [] = [ reverse acc | one ]
+    go one acc (i :=> H : rs) = go one (i :-> (H, O, L) : acc) rs
+    go !one acc (i :=> s' : rs) = do
+      o <- [O, I]
+      d <- [L, R]
+      go (one || o == I) (i :-> (s', o, d) : acc) rs
+
+-- Number of machines
+--  n           old        spines       H-reach
+--  1             4             2             2
+--  2         1,024           896           840
+--  3       304,128       294,624       262,880
+--  4   120,324,096   119,384,064   104,656,128
+--  5
+enum :: Int -> [Machine]
+enum = concatMap fillSkeleton . enumSkeletons
+
+enum' :: Int -> [Machine]
+enum' n = go False [A] (tail states) [] inputs
+  where
+    states = take n [A ..]
+    inputs = [ (s, i) | s <- states, i <- [O, I] ]
+
+    go halted old new acc [] = [reverse acc | halted]
+    go halted old new acc ((s, i) : is) = do
+      -- If we gotten to s and it's still new, it's won't be reachable!
+      guard $ notElem s new
+      -- At most one halting transition and only consider the first of the "new" states
+      s' <- [ H | not halted ] ++ take 1 new ++ old
+      o  <- [O, I]
+      d  <- [L, R]
+      when (s' == H) $ guard $ and [ o == O, d == L, (s, i) /= (A, O) ]
+      let (old', new')
+            | [s'] == take 1 new = (s' : old, drop 1 new)
+            | otherwise          = (old, new)
+          rule = (s, i) :-> (s', o, d)
+      go (halted || s' == H) old' new' (rule : acc) is
+
+data Class = Terminated | NonTerminated Reason
+  deriving (Eq, Ord, Show)
+type Stats = Map Class Int
+
+bruteForce :: Int -> [Machine] -> ([(Int, Int, Machine)], Stats)
+bruteForce bound ms = go 1 0 ms mempty
+  where
+    go _ best [] stats = ([], stats)
+    go i best (m : ms) !stats =
+      case r of
+        Left{} -> go' (i + 1) best ms stats'
+        Right n
+          | n > best  -> first ((n, i, m):) (go' (i + 1) n ms stats')
+          | otherwise -> go' (i + 1) best ms stats'
+      where
+        r = runTo bound m
+        s = case r of
+              Right{} -> Terminated
+              Left r  -> NonTerminated r
+        stats' = Map.insertWith (+) s 1 stats
+      -- case runTo bound m of
+
+      -- | n > best  = (n, m) : go' (i + 1) n tms
+      -- | otherwise = go' (i + 1) best tms
+    go' i best tms stats
+      | mod i 1000000 == 0 = trace (show i) $ go i best tms stats
+      | otherwise          = go i best tms stats
+
+main :: IO ()
+main = do
+  let brute bound ms0 = do
+        let (ms, stats) = bruteForce bound ms0
+        mapM_ print ms
+        let why Terminated = "Terminated"
+            why (NonTerminated r) = show r
+            total = sum stats
+        sequence_ [ printf "%-10s %9d  (%4.1f%%)\n" (why r) n (100 * fromIntegral @_ @Double n / fromIntegral total)
+                  | (r, n) <- Map.toList stats ]
+        printf "%-10s %7d\n" "Total" total
+  map read <$> getArgs >>= \ case
+    [n, bound, a, b] -> brute bound $ take b $ drop a $ enum n
+    [n, bound, a]    -> brute bound $ drop a $ enum n
+    [n, bound]       -> brute bound $ enum n
+    [n] ->
+      print $ length $ enum n
+    -- [] -> do
+    --   let go :: Int -> Int -> [Config] -> IO ()
+    --       go _ _ [] = pure ()
+    --       go !i !lo ((_, Tape n _ _) : confs)
+    --         | mod i 1000000 == 0 = do
+    --             printf "%8d: %6d (lo=%6d)\n" i n lo
+    --             go (i + 1) maxBound confs
+    --         | otherwise          =
+    --             go (i + 1) (min lo n) confs
+    --   go 1 maxBound $ traceRun bb5'
+
+-- bb3
+
+-- bb4
+-- (Terminated,              49_529_149)
+-- (NonTerminated GiveUp,       647_565)
+-- (NonTerminated StuckLeft, 16_164_579)
+-- (NonTerminated RunAway,   17_710_699)
+-- (NonTerminated NoPath,     8_616_376)
+-- (NonTerminated Loop,      11_754_926)
+-- (NonTerminated TooWide,   15_900_802)
+-- (Total,                  120_324_096)
+
+-- Skeletons
+-- Terminated  46_039_804  (44.0%)
+-- GiveUp         613_403  ( 0.6%)
+-- StuckLeft   14_430_267  (13.8%)
+-- RunAway     16_801_803  (16.1%)
+-- Loop        11_365_166  (10.9%)
+-- TooWide     15_405_685  (14.7%)
+-- Total      104_656_128
+
+-- Examples ---------------------------------------------------------------
 
 byHand :: Machine
 byHand = [ (A, O) :-> (A, I, L)
@@ -354,18 +532,58 @@ sim_bb5 extras = go 3
 --       , (E,O) :-> (E,I,L)
 --       , (E,I) :-> (B,O,L) ]
 
--- Score: 43642, index: 2_101_290_604
+-- -- Score: 43642, index: 2_101_290_604
+-- bb5 :: Machine
+-- bb5 = [ (A,O) :-> (B,O,L)
+--       , (A,I) :-> (C,O,L)
+--       , (B,O) :-> (D,O,R)
+--       , (B,I) :-> (A,O,L)
+--       , (C,O) :-> (C,O,R)
+--       , (C,I) :-> (B,O,R)
+--       , (D,O) :-> (E,I,R)
+--       , (D,I) :-> (H,O,L)
+--       , (E,O) :-> (B,I,L)
+--       , (E,I) :-> (E,I,R) ]
+
+-- -- Score: 64265, index: 5_668_169_472
+-- bb5 :: Machine
+-- bb5 = [ (A,O) :-> (B,O,L)
+--       , (A,I) :-> (C,O,R)
+--       , (B,O) :-> (A,I,L)
+--       , (B,I) :-> (D,O,R)
+--       , (C,O) :-> (E,O,R)
+--       , (C,I) :-> (A,O,L)
+--       , (D,O) :-> (E,O,R)
+--       , (D,I) :-> (H,O,L)
+--       , (E,O) :-> (B,O,R)
+--       , (E,I) :-> (C,I,R) ]
+
+-- Score: 97461, index: 3_826_129_157
 bb5 :: Machine
 bb5 = [ (A,O) :-> (B,O,L)
-      , (A,I) :-> (C,O,L)
-      , (B,O) :-> (D,O,R)
-      , (B,I) :-> (A,O,L)
-      , (C,O) :-> (C,O,R)
-      , (C,I) :-> (B,O,R)
-      , (D,O) :-> (E,I,R)
-      , (D,I) :-> (H,O,L)
-      , (E,O) :-> (B,I,L)
-      , (E,I) :-> (E,I,R) ]
+      , (A,I) :-> (C,O,R)
+      , (B,O) :-> (D,O,L)
+      , (B,I) :-> (H,O,L)
+      , (C,O) :-> (E,I,L)
+      , (C,I) :-> (C,I,R)
+      , (D,O) :-> (C,I,L)
+      , (D,I) :-> (A,I,L)
+      , (E,O) :-> (A,O,R)
+      , (E,I) :-> (A,O,L) ]
+
+-- Score: 71076
+bb5Andreas :: Machine
+bb5Andreas =
+  [ (A,O) :-> (B,O,L)
+  , (B,O) :-> (C,O,R)
+  , (C,O) :-> (D,I,R)
+  , (D,O) :-> (E,I,R)
+  , (E,O) :-> (E,I,L)
+  , (A,I) :-> (D,O,R)
+  , (B,I) :-> (E,O,L)
+  , (C,I) :-> (C,O,L)
+  , (D,I) :-> (H,O,L)
+  , (E,I) :-> (A,O,L) ]
 
 example :: Machine
 example = [ (A, O) :-> (B, I, R)
@@ -376,89 +594,3 @@ example = [ (A, O) :-> (B, I, R)
           , (C, I) :-> (A, I, R)
           ]
 
-------------------------------------------------------------------
-
-enum :: Int -> [Machine]
-enum n = go False [A] (tail states) [] inputs
-  where
-    states = take n [A ..]
-    inputs = [ (s, i) | s <- states, i <- [O, I] ]
-
-    go halted old new acc [] = [reverse acc | halted]
-    go halted old new acc ((s, i) : is) = do
-      -- If we gotten to s and it's still new, it's won't be reachable!
-      guard $ notElem s new
-      -- At most one halting transition and only consider the first of the "new" states
-      s' <- [ H | not halted ] ++ take 1 new ++ old
-      o  <- [O, I]
-      d  <- [L, R]
-      when (s' == H) $ guard $ and [ o == O, d == L, (s, i) /= (A, O) ]
-      let (old', new')
-            | [s'] == take 1 new = (s' : old, drop 1 new)
-            | otherwise          = (old, new)
-          rule = (s, i) :-> (s', o, d)
-      go (halted || s' == H) old' new' (rule : acc) is
-
-data Class = Terminated | NonTerminated Reason
-  deriving (Eq, Ord, Show)
-type Stats = Map Class Int
-
-bruteForce :: Int -> [Machine] -> ([(Int, Int, Machine)], Stats)
-bruteForce bound ms = go 1 0 ms mempty
-  where
-    go _ best [] stats = ([], stats)
-    go i best (m : ms) !stats =
-      case r of
-        Left{} -> go' (i + 1) best ms stats'
-        Right n
-          | n > best  -> first ((n, i, m):) (go' (i + 1) n ms stats')
-          | otherwise -> go' (i + 1) best ms stats'
-      where
-        r = runTo bound m
-        s = case r of
-              Right{} -> Terminated
-              Left r  -> NonTerminated r
-        stats' = Map.insertWith (+) s 1 stats
-      -- case runTo bound m of
-
-      -- | n > best  = (n, m) : go' (i + 1) n tms
-      -- | otherwise = go' (i + 1) best tms
-    go' i best tms stats
-      | mod i 1000000 == 0 = trace (show i) $ go i best tms stats
-      | otherwise          = go i best tms stats
-
-main :: IO ()
-main =
-  map read <$> getArgs >>= \ case
-    [n, bound, a, b] -> do
-      let (ms, stats) = bruteForce bound (take b $ drop a $ enum n)
-      mapM_ print ms
-      mapM_ print $ Map.toList stats
-    [n, bound, a] -> do
-      let (ms, stats) = bruteForce bound (drop a $ enum n)
-      mapM_ print ms
-      mapM_ print $ Map.toList stats
-    [n, bound] -> do
-      let (ms, stats) = bruteForce bound (enum n)
-      mapM_ print ms
-      mapM_ print $ Map.toList stats
-    [n] ->
-      print $ length $ enum n
-    -- [] -> do
-    --   let go :: Int -> Int -> [Config] -> IO ()
-    --       go _ _ [] = pure ()
-    --       go !i !lo ((_, Tape n _ _) : confs)
-    --         | mod i 1000000 == 0 = do
-    --             printf "%8d: %6d (lo=%6d)\n" i n lo
-    --             go (i + 1) maxBound confs
-    --         | otherwise          =
-    --             go (i + 1) (min lo n) confs
-    --   go 1 maxBound $ traceRun bb5'
-
--- (Terminated,49529149)
--- (NonTerminated GiveUp,647565)
--- (NonTerminated StuckLeft,16164579)
--- (NonTerminated RunAway,17710699)
--- (NonTerminated NoPath,8616376)
--- (NonTerminated Loop,11754926)
--- (NonTerminated TooWide,15900802)
