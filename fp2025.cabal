@@ -26,6 +26,9 @@ executable fp2025
                  -dsuppress-coercions -ddump-simpl -dsuppress-idinfo
                  -dsuppress-type-applications -dsuppress-uniques
                  -dsuppress-module-prefixes -ddump-to-file
+
+    if impl(ghc >= 9.10)
+      ghc-options: -Wno-x-partial
     default-extensions:
       LambdaCase
       ViewPatterns
