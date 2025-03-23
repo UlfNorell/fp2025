@@ -248,46 +248,6 @@ data GenSt = GenSt
   }
   deriving (Show)
 
--- BB(3)
--- First implementation
---    Terminated     26668  (68.8%)
---    GiveUp          4294  (11.1%)
---    StuckLeft       2176  ( 5.6%)
---    RunAway         1029  ( 2.7%)
---    Loop            4581  (11.8%)
---    Total          38748
--- Halt reachable
---    Terminated     26668  (74.3%)
---    GiveUp          3312  ( 9.2%)
---    StuckLeft       1519  ( 4.2%)
---    RunAway          629  ( 1.8%)
---    Loop            3768  (10.5%)
---    Total          35896
--- Oops (only HOL)
---    Terminated      6667  (41.9%)
---    GiveUp           715  ( 4.5%)
---    StuckLeft       1519  ( 9.6%)
---    RunAway          629  ( 4.0%)
---    Loop            3768  (23.7%)
---    TooWide         2597  (16.3%)
---    Total          15895
--- Lower bound 45
---    Terminated      5141  (35.8%)
---    GiveUp           715  ( 5.0%)
---    StuckLeft       1519  (10.6%)
---    RunAway          629  ( 4.4%)
---    Loop            3768  (26.2%)
---    TooWide         2597  (18.1%)
---    Total          14369
--- Fixed and improved RunAway
---    Terminated      5168  (35.9%)
---    GiveUp           720  ( 5.0%)
---    StuckLeft       1559  (10.8%)
---    RunAway          710  ( 4.9%)
---    Loop            3796  (26.3%)
---    TooWide         2454  (17.0%)
---    Total          14407
-
 smartGenerator :: Int -> Int -> Generator GenSt
 smartGenerator n lo = Generator{..}
   where
@@ -321,6 +281,10 @@ smartGenerator n lo = Generator{..}
                   ]
       o <- if s' == H then [O] else [O, I]
       d <- if s' == H then [L] else [L, R]
+
+      -- (A, O) :-> (s, O, L) is never good, just make s the starting state!
+      guard $ (s, i, o, d) /= (A, O, O, L)
+
       pure ((s', o, d), g{ oldStates       = old'
                          , newStates       = new'
                          , openTransitions = open'
@@ -391,6 +355,11 @@ runExplore' Generator{..} LoopDetector{..} fuel m =
         Right ls' -> go (fuel - 1) (n + 1) g' l' ls' m' conf'
       where
         i = look tape
+
+-- Plan:
+--  * Make exploration state explicit, to enable resuming from a given state
+--  * Add parallelize
+--  * Terminal gui with live updated stats, and ability to stop and write state to disk
 
 naiveExplore :: Int -> Int -> [(Either Reason Int, Machine)]
 naiveExplore n fuel = runExplore' (dumbGenerator n) noLoopDetector fuel []
@@ -613,6 +582,54 @@ main = do
 -- TooWide        32,385  (12.3%)
 -- Total         262,880
 
+-- BB(3)
+-- First implementation of smartGenerator
+--    Terminated     26668  (68.8%)
+--    GiveUp          4294  (11.1%)
+--    StuckLeft       2176  ( 5.6%)
+--    RunAway         1029  ( 2.7%)
+--    Loop            4581  (11.8%)
+--    Total          38748
+-- Halt reachable
+--    Terminated     26668  (74.3%)
+--    GiveUp          3312  ( 9.2%)
+--    StuckLeft       1519  ( 4.2%)
+--    RunAway          629  ( 1.8%)
+--    Loop            3768  (10.5%)
+--    Total          35896
+-- Oops (only HOL)
+--    Terminated      6667  (41.9%)
+--    GiveUp           715  ( 4.5%)
+--    StuckLeft       1519  ( 9.6%)
+--    RunAway          629  ( 4.0%)
+--    Loop            3768  (23.7%)
+--    TooWide         2597  (16.3%)
+--    Total          15895
+-- Lower bound 45
+--    Terminated      5141  (35.8%)
+--    GiveUp           715  ( 5.0%)
+--    StuckLeft       1519  (10.6%)
+--    RunAway          629  ( 4.4%)
+--    Loop            3768  (26.2%)
+--    TooWide         2597  (18.1%)
+--    Total          14369
+-- Fixed and improved RunAway
+--    Terminated      5168  (35.9%)
+--    GiveUp           720  ( 5.0%)
+--    StuckLeft       1559  (10.8%)
+--    RunAway          710  ( 4.9%)
+--    Loop            3796  (26.3%)
+--    TooWide         2454  (17.0%)
+--    Total          14407
+-- Don't go (A, O) :-> (_, O, L)
+--    Terminated      4471  (37.0%)
+--    GiveUp           616  ( 5.1%)
+--    StuckLeft       1252  (10.4%)
+--    RunAway          634  ( 5.2%)
+--    Loop            2934  (24.3%)
+--    TooWide         2175  (18.0%)
+--    Total          12082
+
 -- BB(4) (fuel: 10,000)
 -- (Terminated,              49,529,149)
 -- (NonTerminated GiveUp,       647,565)
@@ -650,7 +667,8 @@ main = do
 --    TooWide       395,934  (17.2%)
 --    Total       2,304,879
 
--- Fixed RunAway (2m38s)
+-- Fixed RunAway
+--  2m38s
 --    Terminated    761,834  (32.9%)
 --    GiveUp        239,243  (10.3%)
 --    StuckLeft     173,502  ( 7.5%)
@@ -658,6 +676,16 @@ main = do
 --    Loop          682,361  (29.4%)
 --    TooWide       380,319  (16.4%)
 --    Total       2,318,096
+
+-- Don't go (A, O) :-> (_, O, L)
+--  2m12s
+--    Terminated    641,264  (33.3%)
+--    GiveUp        199,594  (10.4%)
+--    StuckLeft     143,237  ( 7.4%)
+--    RunAway        71,888  ( 3.7%)
+--    Loop          538,475  (27.9%)
+--    TooWide       333,648  (17.3%)
+--    Total       1,928,106
 
 -- Examples ---------------------------------------------------------------
 
@@ -831,6 +859,21 @@ bb5Andreas =
   , (B,I) :-> (E,O,L)
   , (C,I) :-> (C,O,L)
   , (D,I) :-> (H,O,L)
+  , (E,I) :-> (A,O,L) ]
+
+-- The traditional (infinite both ways) bb5
+-- Terminates in 14 steps on our tapes
+bb5vanilla :: Machine
+bb5vanilla =
+  [ (A,O) :-> (B,I,R)
+  , (A,I) :-> (C,I,L)
+  , (B,O) :-> (C,I,R)
+  , (B,I) :-> (B,I,R)
+  , (C,O) :-> (D,I,R)
+  , (C,I) :-> (E,O,L)
+  , (D,O) :-> (A,I,L)
+  , (D,I) :-> (D,I,L)
+  , (E,O) :-> (H,I,R)
   , (E,I) :-> (A,O,L) ]
 
 example :: Machine
