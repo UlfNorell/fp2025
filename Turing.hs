@@ -245,6 +245,7 @@ data GenSt = GenSt
   , newStates       :: [State]
   , openTransitions :: Int
   , rGraph          :: ReachGraph State
+  , curRules        :: Machine
   }
   deriving (Show)
 
@@ -256,6 +257,7 @@ smartGenerator n lo = Generator{..}
             newStates       = take (n - 1) [B ..] ++ [H]  -- Halt as the last resort
             openTransitions = 2
             rGraph          = mempty
+            curRules        = []
     genTransitions g@GenSt{..} n (s, look -> i) = do
       let new = take 1 newStates
           states | openTransitions > 1 = new ++ map fst oldStates
@@ -264,9 +266,10 @@ smartGenerator n lo = Generator{..}
       let oldStates' = map dec oldStates
             where dec (s', n) | s == s' = (s', n - 1)
                   dec e                 = e
+          isNew = [s'] == new
           (old', new', open')
-            | [s'] == new = ((s', 2) : oldStates', drop 1 newStates, openTransitions + 1)
-            | otherwise   = (          oldStates',        newStates, openTransitions - 1)
+            | isNew     = ((s', 2) : oldStates', drop 1 newStates, openTransitions + 1)
+            | otherwise = (          oldStates',        newStates, openTransitions - 1)
           rg' = addReachEdge s s' rGraph
           exitStates = Set.fromList [ s | (s, n) <- old', n > 0 ]
       -- Don't halt before the lower bound unless we have to
@@ -283,13 +286,42 @@ smartGenerator n lo = Generator{..}
       d <- if s' == H then [L] else [L, R]
 
       -- (A, O) :-> (s, O, L) is never good, just make s the starting state!
+      -- Not technically true, if you have a (s, O) :-> (A, O, L) transition you can
+      -- buy an extra step by making s the starting state.
       guard $ (s, i, o, d) /= (A, O, O, L)
+
+      let rules' = (s, i) :-> (s', o, d) : curRules
+
+      -- Don't create equivalent states
+      guard $ not $ hasEquivalentState s' rules'
 
       pure ((s', o, d), g{ oldStates       = old'
                          , newStates       = new'
                          , openTransitions = open'
                          , rGraph          = rg'
+                         , curRules        = rules'
                          })
+
+hasEquivalentState :: State -> Machine -> Bool
+hasEquivalentState s m =
+  case rep s of
+    Just r | not $ null equiv -> True
+      where
+        equiv = [ s' | s' <- states, s' /= s
+                     , Just r' <- [rep s']
+                     , r =~ r' ]
+    _ -> False
+  where
+    states = nub [ s | (s, _) :-> _ <- m ]
+    rep s = case sort [ (i, o) | (s', i) :-> o <- m,  s == s' ] of
+              [(O, o1), (I, o2)] -> Just (s, o1, o2)
+              _                  -> Nothing
+    (s, o1, o2) =~ (s', o1', o2') = eq o1 o1' && eq o2 o2'
+      where
+        eq o o' = r o == r o'
+        r (s0, o, d)
+          | s0 == s || s0 == s' = (Nothing, o, d) -- self transition
+          | otherwise           = (Just s0, o, d)
 
 -- debug = go (initG g)
 --   where
@@ -629,6 +661,14 @@ main = do
 --    Loop            2934  (24.3%)
 --    TooWide         2175  (18.0%)
 --    Total          12082
+-- No equivalent states
+--    Terminated      4471  (37.0%)
+--    GiveUp           616  ( 5.1%)
+--    StuckLeft       1250  (10.4%)
+--    RunAway          634  ( 5.3%)
+--    Loop            2932  (24.3%)
+--    TooWide         2173  (18.0%)
+--    Total          12076
 
 -- BB(4) (fuel: 10,000)
 -- (Terminated,              49,529,149)
@@ -686,6 +726,16 @@ main = do
 --    Loop          538,475  (27.9%)
 --    TooWide       333,648  (17.3%)
 --    Total       1,928,106
+
+-- No equivalent states
+--  2m12s
+--    Terminated    640,502  (33.3%)
+--    GiveUp        198,448  (10.3%)
+--    StuckLeft     142,953  ( 7.4%)
+--    RunAway        71,864  ( 3.7%)
+--    Loop          537,139  (27.9%)
+--    TooWide       332,776  (17.3%)
+--    Total       1,923,682
 
 -- Examples ---------------------------------------------------------------
 
