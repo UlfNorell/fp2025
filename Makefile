@@ -6,7 +6,10 @@ core_flags = -dsuppress-coercions -ddump-simpl -dsuppress-idinfo \
 prof_flags = -prof -fprof-auto
 
 default:
-	ghc --make -O3 Turing.hs $(core_flags)
+	cabal build
 
-prof:
-	ghc --make -O3 Turing.hs -o Turing_p $(prof_flags)
+# default:
+# 	ghc --make -O3 Turing.hs $(core_flags)
+
+# prof:
+# 	ghc --make -O3 Turing.hs -o Turing_p $(prof_flags)
