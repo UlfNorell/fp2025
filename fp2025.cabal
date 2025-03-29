@@ -33,3 +33,4 @@ executable fp2025
       LambdaCase
       ViewPatterns
       RecordWildCards
+      PatternSynonyms

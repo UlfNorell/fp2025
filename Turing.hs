@@ -36,22 +36,76 @@ data State  = A | B | C | D | E | F | H deriving ( Eq, Ord, Show, Enum )
 -- the head is at the first element of the second list
 -- the first list is reversed
 
+data RLE a = RLE a {-# UNPACK #-} !Int
+  deriving (Eq, Ord, Show, Functor)
+
+newtype RList a = RList [RLE a]
+  deriving (Eq, Ord, Show, Functor)
+
+instance Eq a => Semigroup (RList a) where
+  RList [] <> ys = ys
+  RList [RLE x n] <> RList (RLE y m : ys)
+    | x == y = RList (RLE y (n + m) : ys)
+  RList (x : xs) <> RList ys = RList (x : zs)
+    where
+      RList zs = RList xs <> RList ys
+
+instance Eq a => Monoid (RList a) where
+  mempty = RList []
+
+expand :: RList a -> [a]
+expand (RList xs) = concat [ replicate n x | RLE x n <- xs ]
+
+lengthR :: RList a -> Int
+lengthR (RList xs) = sum [ n | RLE _ n <- xs ]
+
+consR :: Eq a => a -> RList a -> RList a
+consR x (RList []) = RList [RLE x 1]
+consR x (RList xs@(RLE y n : ys))
+  | x == y    = RList (RLE y (n + 1) : ys)
+  | otherwise = RList (RLE x 1 : xs)
+
+headR :: RList a -> Maybe a
+headR (RList []) = Nothing
+headR (RList (RLE x _ : _)) = Just x
+
+dropR :: Int -> RList a -> RList a
+dropR 0 xs = xs
+dropR n (RList (RLE x m : xs))
+  | n < m     = RList (RLE x (m - n) : xs)
+  | otherwise = dropR (n - m) (RList xs)
+
+unconsR :: RList a -> Maybe (a, RList a)
+unconsR (RList []) = Nothing
+unconsR (RList (RLE x n : xs))
+  | n > 1     = Just (x, RList (RLE x (n - 1) : xs))
+  | otherwise = Just (x, RList xs)
+
+pattern (:@) :: Eq a => a -> RList a -> RList a
+pattern x :@ xs <- (unconsR -> Just (x, xs))
+  where
+    x :@ xs = consR x xs
+
+pattern NilR = RList []
+
+{-# COMPLETE NilR, (:@) #-}
+
 type Tape = Tape' Symbol
-data Tape' a = Tape {-# UNPACK #-} !Int [a] [a]
+data Tape' a = Tape {-# UNPACK #-} !Int (RList a) (RList a)
   deriving (Eq, Ord, Show)
 
-tape0 :: Enum a => Tape' a
-tape0 = Tape 0 [] []
+tape0 :: (Eq a, Enum a) => Tape' a
+tape0 = Tape 0 mempty mempty
 
 look :: Tape -> Symbol
-look (Tape _ _ [])    = O
-look (Tape _ _ (x:_)) = x
+look (Tape _ _ NilR)    = O
+look (Tape _ _ (x :@ _)) = x
 
 write :: Symbol -> Tape -> Tape
-write O (Tape n ls    [])  = Tape n ls    []
-write I (Tape n ls    [])  = Tape n ls (I:[])
-write O (Tape n ls (_:[])) = Tape n ls    []
-write x (Tape n ls (_:rs)) = Tape n ls (x:rs)
+write O (Tape n ls    NilR)     = Tape n ls       NilR
+write I (Tape n ls    NilR)     = Tape n ls (I :@ NilR)
+write O (Tape n ls (_ :@ NilR)) = Tape n ls       NilR
+write x (Tape n ls (_ :@ rs))   = Tape n ls (x :@   rs)
 
 -- we can move (L)eft or (R)ight on a Tape
 
@@ -59,11 +113,11 @@ data Dir = L | R
   deriving ( Eq, Ord, Show, Enum )
 
 move :: Dir -> Tape -> Tape
-move L (Tape n  []      rs)  = Tape 0       []        rs -- bouncing
-move L (Tape n (O:ls)   [])  = Tape (n - 1) ls        []
-move L (Tape n (x:ls)   rs)  = Tape (n - 1) ls     (x:rs)
-move R (Tape n  ls   (x:rs)) = Tape (n + 1) (x:ls)    rs
-move R (Tape n  ls      [])  = Tape (n + 1) (O:ls)    []
+move L (Tape n  NilR          rs)  = Tape 0           NilR           rs -- bouncing
+move L (Tape n (O :@ ls)    NilR)  = Tape (n - 1)       ls         NilR
+move L (Tape n (x :@ ls)      rs)  = Tape (n - 1)       ls     (x :@ rs)
+move R (Tape n  ls      (x :@ rs)) = Tape (n + 1) (x :@ ls)    rs
+move R (Tape n  ls          NilR)  = Tape (n + 1) (O :@ ls)  NilR
 
 ------------------------------------------------------------------
 -- a Config is a pair of a state and a tape
@@ -101,16 +155,19 @@ vizrun :: Int -> Int -> Machine -> Int -> Config -> IO (Int, Config)
 vizrun w 0 _ n conf = do
   putStrLn "Out of fuel!"
   pure (n, conf)
-vizrun w fuel rls n conf@(s, Tape ln ls rs) =
-  n `seq`
-  do putStrLn
-       $ printf "%4d " ln
-      ++ concat [ " " ++ show x ++ " " | x <- take (div (w - 5) 3) $ reverse ls ]
-      ++ "\ESC[31m" ++ show s ++ "\ESC[0m"
-      ++ concat [ show x ++ "  " | x <- take (max 0 $ div (w - 5) 3 - ln) rs ]
-     case rules rls conf of
-       Nothing    -> return (n, conf)
-       Just conf' -> vizrun w (fuel - 1) rls (n + 1) conf'
+vizrun w fuel rls !n conf@(s, Tape ln (expand -> ls) rrs) = do
+  putStrLn
+    $ printf "%4d " ln
+   ++ concat [ " " ++ show x ++ " " | x <- take (div (w - 5) 3) $ reverse ls ]
+   ++ "\ESC[31m" ++ show s ++ "\ESC[0m"
+   ++ concat [ show x ++ "  " | x <- take (max 0 $ div (w - 5) 3 - ln) rs ]
+  case rules rls conf of
+    Nothing    -> return (n, conf)
+    Just conf' -> vizrun w (fuel - 1) rls (n + 1) conf'
+  where
+    rs = pad $ expand rrs
+    pad [] = [O]
+    pad rs = rs
 
 vrun :: Int -> Machine -> IO ()
 vrun n m = vizrun 200 n m 0 initConf >>= print . fst
@@ -165,9 +222,9 @@ runUnknown fuel n i = m <$ vrun fuel m
 
 
 loopCheck :: LoopAnalysis -> Int -> Config -> Config -> Maybe Reason
-loopCheck loop _ _ (s, tape@(Tape _ [] _))
+loopCheck loop _ _ (s, tape@(Tape _ NilR _))
   | elem (s, look tape) (leftStuck loop) = Just StuckLeft
-loopCheck loop _ _ (s, Tape _ _ [])
+loopCheck loop _ _ (s, Tape _ _ NilR)
   | elem s (runners loop) = Just RunAway
 loopCheck _ n _ (s, Tape w _ _)
   | n > 100, w * 6 > n = Just TooWide
@@ -182,7 +239,7 @@ runToRef fuel m = go fuel 0 (A, tape0)
       Just conf' -> go (fuel - 1) (n + 1) conf'
 
 tapeSize :: Tape -> Int
-tapeSize (Tape n ls rs) = n + length rs
+tapeSize (Tape n ls rs) = n + lengthR rs
 
 runTo :: Int -> Machine -> Either Reason Int
 runTo fuel = fst . runTo' () (\ _ _ -> id) fuel
@@ -206,12 +263,15 @@ runTo' s0 updS fuel m = go s0 fuel 0 mempty (A, tape0)
         seen' | shouldCache = Set.insert conf seen
               | otherwise   = seen
 
-traceRun :: Machine -> [(State, Tape)]
-traceRun m = go (A, tape0)
+traceRun :: Machine -> [Config]
+traceRun m = traceRun' m (A, tape0)
+
+traceRun' :: Machine -> Config -> [Config]
+traceRun' m = go
   where
     go conf =
       case rules m conf of
-        Nothing    -> []
+        Nothing    -> [conf]
         Just conf' -> conf : go conf'
 
 -- Running multiple machines at once --------------------------------------
@@ -380,13 +440,42 @@ runExplore' Generator{..} LoopDetector{..} fuel m =
               let rule = (s, i) :-> sod
               pure (rule : m, g', stepL l rule, sod)
             sod : _ -> pure (m, g, l, sod)
-      (m', g', l', (s', o, d)) <- step
-      let conf' = (s', move d $ write o tape)
+      (m', g', l', sod@(s', _, _)) <- step
+      let (tape', m) = applyRule s sod tape
+          conf' = (s', tape')
       case stepLoop l' ls n conf conf' of
         Left r    -> pure (Left r, reverse m')
-        Right ls' -> go (fuel - 1) (n + 1) g' l' ls' m' conf'
+        Right ls' -> go (fuel - m) (n + m) g' l' ls' m' conf'
       where
         i = look tape
+
+{-# INLINE applyRule #-}
+applyRule :: State -> (State, Symbol, Dir) -> Tape -> (Tape, Int)
+applyRule s (s', o, R) tape@(Tape w ls rs) =
+  case rs of
+    RList []              -> (Tape (w + 1) (o :@ ls) rs, 1)
+    RList (RLE i n : rs)
+      | s == s'   -> (Tape (w + n) (RList [RLE o n] <> ls) (RList rs), n)
+      | otherwise -> (move R $ write o tape, 1)
+-- applyRule _ (_, o, R) tape = (move R $ write o tape, 1)
+applyRule s (s', o, L) tape@(Tape w (RList (RLE i n : ls)) (j :@ rs))
+  | s == s', i == j = (tape', n)
+  where tape' = Tape (w - n) (RList ls) $ i :@ add o rs
+        add O NilR = NilR
+        add o rs   = RList [RLE o n] <> rs
+applyRule _ (_, o, L) tape = (move L $ write o tape, 1)
+-- applyRule _ (_, o, d) tape = (move d $ write o tape, 1)
+
+runSteps :: Int -> Machine -> (Either Reason Int, Int)
+runSteps fuel m = go fuel 0 0 (A, tape0)
+  where
+    go 0 _ steps _ = (Left GiveUp, steps)
+    go fuel n steps (H, _) = (Right n, steps)
+    go fuel !n !steps (s, tape) = go (fuel - n') (n + n') (steps + 1) (s', tape')
+      where
+        i = look tape
+        sod@(s', _, _) : _ = [o | si :-> o <- m, si == (s, i)]
+        (tape', n') = applyRule s sod tape
 
 -- Plan:
 --  * Make exploration state explicit, to enable resuming from a given state
@@ -398,6 +487,66 @@ naiveExplore n fuel = runExplore' (dumbGenerator n) noLoopDetector fuel []
 
 explore :: Int -> Int -> Int -> [(Either Reason Int, Machine)]
 explore n lo fuel = runExplore' (smartGenerator n lo) loopDetector fuel []
+
+-- Macro machines ---------------------------------------------------------
+
+-- The Dir is which direction we're moving (i.e. if dir is L we are looking at the right end of the
+-- macro symbol). We also need to know if we're at the left end of the tape!
+type MacroSymbol = [Symbol]
+data Wall = LeftWall | NoWall
+  deriving (Eq, Ord, Show)
+type MacroMachine = Map (State, MacroSymbol, Dir, Wall) (State, MacroSymbol, Dir, Int)
+
+compileMacroStep :: Machine -> (State, MacroSymbol, Dir, Wall) -> Either Reason (State, MacroSymbol, Dir, Int)
+compileMacroStep m (s, is, d, w) = go fuel 0 (s, tape)
+  where
+    tape | d == R    = ([], is)
+         | otherwise = (ls, [r])
+      where r : ls = reverse is
+    n = length $ nub [ s | (s, _) :-> _ <- m ]
+    fuel = n * (2 ^ length is)
+
+    move L ([], rs)     = ([], rs)
+    move L (l : ls, rs) = (ls, l : rs)
+    move R (ls, r : rs) = (r : ls, rs)
+
+    go 0 n (s, tape) = Left GiveUp
+    go fuel n (H, _) = Right (H, [], R, n)
+    go fuel !n (s, (ls, i : rs))
+      | d == L, null ls, w == NoWall = Right (s', o : rs, L, n + 1)
+      | d == R, null rs              = Right (s', reverse (o : ls), R, n + 1)
+      | otherwise                    = go (fuel - 1) (n + 1) (s', move d (ls, o : rs))
+      where
+        (s', o, d) : _ = [o | si :-> o <- m, si == (s, i)]
+
+runMacro :: Int -> Int -> Machine -> (Either Reason Int, Int, MacroMachine)
+runMacro k fuel m = go mempty fuel 0 0 (A, R, ([], []))
+  where
+    look (_, i : _) = i
+    look (_, [])    = replicate k O
+
+    wall ([], _) = LeftWall
+    wall _       = NoWall
+
+    write x (ls, _ : rs) = (ls, x : rs)
+    write x (ls, [])     = (ls, [x])
+
+    move L ([], rs)     = ([], rs)
+    move L (l : ls, rs) = (ls, l : rs)
+    move R (ls, r : rs) = (r : ls, rs)
+
+    go mm 0 _ steps _ = (Left GiveUp, steps, mm)
+    go mm fuel n steps (H, _, _) = (Right n, steps, mm)
+    go mm fuel !n !steps conf@(s, d, tape@(look -> i)) =
+        go mm' (fuel - n') (n + n') (steps + 1) (s', d', tape')
+      where
+        sid = (s, i, d, wall tape)
+        ((s', o, d', n'), mm') =
+          case Map.lookup sid mm of
+            Just o  -> (o, mm)
+            Nothing -> (o, Map.insert sid o mm)
+              where Right o = compileMacroStep m sid
+        tape' = move d' $ write o tape
 
 -- Compiled machines ------------------------------------------------------
 
@@ -737,6 +886,12 @@ main = do
 --    TooWide       332,776  (17.3%)
 --    Total       1,923,682
 
+-- RLE
+--  2m12s       normal list implementation
+--  2m47s       bulk nothing
+--  3m22s       bulk R    why is this so much slower?! the matching!
+--  3m25s       also bulk L
+
 -- Examples ---------------------------------------------------------------
 
 byHand :: Machine
@@ -885,17 +1040,69 @@ sim_bb5 extras = go 3
 --       , (E,I) :-> (A,O,L) ]
 
 -- -- Score: 115854, index: 4_082_614_040
+-- bb5 :: Machine
+-- bb5 = [ (A,O) :-> (B,O,L)
+--       , (A,I) :-> (C,O,R)
+--       , (B,O) :-> (D,O,L)
+--       , (B,I) :-> (A,I,L)
+--       , (C,O) :-> (A,I,R)
+--       , (C,I) :-> (E,O,R)
+--       , (D,O) :-> (E,I,R)
+--       , (D,I) :-> (H,O,L)
+--       , (E,O) :-> (C,O,R)
+--       , (E,I) :-> (A,I,R) ]
+
+-- -- Score: 161,279, index: 10,125,304 (explore)
+-- bb5 :: Machine
+-- bb5 = [ (A,O) :-> (B,O,L)
+--       , (B,O) :-> (C,O,L)
+--       , (C,O) :-> (A,I,L)
+--       , (A,I) :-> (D,O,L)
+--       , (D,O) :-> (B,I,L)
+--       , (B,I) :-> (E,I,L)
+--       , (E,I) :-> (C,O,R)
+--       , (C,I) :-> (E,O,R)
+--       , (E,O) :-> (C,I,R)
+--       , (D,I) :-> (H,O,L) ]
+
+-- -- Score: 161,537, index: 12,983,337 (explore)
+-- bb5 :: Machine
+-- bb5 = [ (A,O) :-> (B,O,L)
+--       , (B,O) :-> (C,O,R)
+--       , (C,O) :-> (D,O,L)
+--       , (D,O) :-> (C,I,L)
+--       , (C,I) :-> (E,O,R)
+--       , (E,O) :-> (B,I,R)
+--       , (E,I) :-> (D,O,R)
+--       , (B,I) :-> (C,O,L)
+--       , (D,I) :-> (A,I,R)
+--       , (A,I) :-> (H,O,L) ]
+
+-- -- Score: 187,801, index: 82,851,639
+-- bb5 :: Machine
+-- bb5 = [ (A,O) :-> (B,O,R)
+--       , (B,O) :-> (C,I,R)
+--       , (C,O) :-> (A,I,L)
+--       , (A,I) :-> (D,O,L)
+--       , (D,O) :-> (B,O,L)
+--       , (C,I) :-> (D,O,R)
+--       , (D,I) :-> (E,O,R)
+--       , (E,O) :-> (A,I,R)
+--       , (B,I) :-> (C,O,L)
+--       , (E,I) :-> (H,O,L) ]
+
+-- Score: 449,336, index: 7,740,790
 bb5 :: Machine
-bb5 = [ (A,O) :-> (B,O,L)
-      , (A,I) :-> (C,O,R)
-      , (B,O) :-> (D,O,L)
-      , (B,I) :-> (A,I,L)
-      , (C,O) :-> (A,I,R)
-      , (C,I) :-> (E,O,R)
-      , (D,O) :-> (E,I,R)
-      , (D,I) :-> (H,O,L)
-      , (E,O) :-> (C,O,R)
-      , (E,I) :-> (A,I,R) ]
+bb5 = [ (A,O) :-> (B,O,R)
+      , (B,O) :-> (C,O,L)
+      , (C,O) :-> (D,I,R)
+      , (D,O) :-> (B,I,L)
+      , (B,I) :-> (A,I,R)
+      , (A,I) :-> (B,I,R)
+      , (C,I) :-> (D,O,R)
+      , (D,I) :-> (E,I,R)
+      , (E,I) :-> (C,O,R)
+      , (E,O) :-> (H,O,L) ]
 
 -- Score: 71076
 bb5Andreas :: Machine
@@ -938,10 +1145,52 @@ example = [ (A, O) :-> (B, I, R)
 -- QuickCheck tests -------------------------------------------------------
 
 instance Arbitrary State where
-  arbitrary = elements [A .. F]
+  arbitrary = elements [A .. H]
+
+instance Arbitrary Symbol where
+  arbitrary = elements [O, I]
+  shrink O = []
+  shrink I = [O]
+
+instance Arbitrary Dir where
+  arbitrary = elements [L, R]
+  shrink L = []
+  shrink R = [L]
+
+instance Arbitrary a => Arbitrary (RLE a) where
+  arbitrary = RLE <$> arbitrary <*> choose (1, 10)
+  shrink (RLE x n) = [ RLE x n | x <- shrink x ] ++
+                     [ RLE x n | n <- shrink n, n > 0 ]
+
+instance (Eq a, Arbitrary a) => Arbitrary (RList a) where
+  arbitrary = mconcat . map (RList . (:[])) <$> arbitrary
+  shrink (RList rs) = mconcat . map (RList . (:[])) <$> shrink rs
+
+instance Arbitrary Tape where
+  arbitrary = do
+    ls <- arbitrary
+    rs <- arbitrary
+    pure $ Tape (lengthR ls) ls rs
+  shrink (Tape _ ls rs) =
+    [ Tape (lengthR ls) ls rs | ls <- shrink ls ] ++
+    [ Tape (lengthR ls) ls rs | rs <- shrink rs ]
+
+instance Arbitrary Rule where
+  arbitrary = (:->) <$> arbitrary <*> arbitrary
+  shrink (i :-> o) = [ i :-> o | o <- shrink o ]
 
 genGraph :: Gen (ReachGraph State)
 genGraph = foldr (uncurry addReachEdge) mempty <$> (listOf ((,) <$> elements [A .. F] <*> elements [A .. F]))
+
+genMachine :: Int -> Gen Machine
+genMachine n = go [ (s, i) | s <- states, i <- [O, I] ]
+  where
+    states = take n [A ..]
+    go [] = pure []
+    go (i : is) = do
+      sod <- arbitrary
+      rs  <- go is
+      pure (i :-> sod : rs)
 
 prop_reach_idem :: [(State, State)] -> State -> State -> Property
 prop_reach_idem es s1 s2 = add g === add (add g)
@@ -959,3 +1208,16 @@ prop_reach es = whenFail (print g) $ bad === []
           , let ss' = fromMaybe mempty $ Map.lookup s' g
           , not $ Set.isSubsetOf ss' ss
           ]
+
+prop_bulk :: Int -> Config -> Property
+prop_bulk n conf@(s, tape@(look -> i)) =
+  forAllShrink (genMachine n) shrink $ \ m ->
+  case [ (s', o, d) | i0 :-> (s', o, d) <- m, i0 == (s, i) ] of
+    [] -> False ==> True
+    (s', o, d) : _ ->
+      collect (min steps 2) $
+      whenFail (printf "steps=%d\n" steps) $
+        (s', tape') === traceRun' m conf !! steps
+      where
+        (tape', steps) = applyRule s (s', o, d) tape
+
