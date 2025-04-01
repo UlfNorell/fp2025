@@ -64,13 +64,14 @@ run rls n conf = n `seq` case rules rls conf of
                            Nothing    -> (n, conf)
                            Just conf' -> run rls (n+1) conf'
 
-vizConf :: Int -> Int -> Config -> String
-vizConf w n conf@(s, Tape ln (expand -> ls) rrs) =
+vizConf :: Int -> Int -> Int -> Config -> String
+vizConf w dw n conf@(s, Tape ln rls@(expand -> ls) rrs) =
   printf "\ESC[34m%5d\ESC[0m| " n
-   ++ concat [ " " ++ show x ++ " " | x <- take (div (w - 5) 3) $ reverse ls ]
+   ++ concat [ " " ++ showD x ++ " " | x <- take (div (w - 5) 3) $ reverse ls ]
    ++ "\ESC[31m" ++ show s ++ "\ESC[0m"
-   ++ concat [ show x ++ "  " | x <- take (max 0 $ div (w - 5) 3 - ln) rs ]
+   ++ concat [ showD x ++ "  " | x <- take (max 0 $ div (w - 5) 3 - ln) rs ]
   where
+    showD (Symbol x) = printf "%*d" (-dw) x
     rs = pad $ expand rrs
     pad [] = [0]
     pad rs = rs
@@ -80,7 +81,7 @@ vizrun w 0 _ n conf = do
   putStrLn "Out of fuel!"
   pure (n, conf)
 vizrun w fuel rls !n conf@(s, Tape ln (expand -> ls) rrs) = do
-  putStrLn $ vizConf w n conf
+  putStrLn $ vizConf w 1 n conf
   case rules rls conf of
     Nothing    -> return (n, conf)
     Just conf' -> vizrun w (fuel - 1) rls (n + 1) conf'
@@ -461,7 +462,7 @@ compileMacroStep k m (s, expandMacroSymbol k -> is, d, w) = go fuel 0 (s, tape)
 --    but that's not valid! Because it depends on the macro digit on left having a right-most I.
 --    To batch we'd need a rule that can work on IIIⁿ, so it would be something like
 --      IIIⁿC O_ -> C OII IIIⁿ⁻¹ I_
---    - The bb4 has the same pattern:
+--    - bb4 has the same pattern:
 --        0  0 B0  0  1  1  1  1  1
 --        0  0  0 C0  1  1  1  1  1
 --        0  0  0  0 A1  1  1  1  1
@@ -482,8 +483,10 @@ runMacro' verbose k fuel m = go mempty fuel 0 0 (A, R, tape0)
     wall (Tape 0 _ _) = LeftWall
     wall _            = NoWall
 
+    dw = length $ show $ 2 ^ k - 1
+
     tr n (s, _, tape)
-      | verbose   = trace (vizConf 120 n (s, tape))
+      | verbose   = trace (vizConf 120 dw n (s, tape))
       | otherwise = id
 
     go mm fuel n steps conf | fuel <= 0 = tr n conf (Left GiveUp, steps, mm)
