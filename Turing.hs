@@ -20,104 +20,17 @@ import Data.Char
 import Text.Printf
 import Test.QuickCheck
 
+import RList
+import Tape
+
 ------------------------------------------------------------------
 -- a Symbol is what is written on the tape
 -- a State is the value of the internal state of a machine
 
-data Symbol = O | I deriving ( Eq, Ord, Show, Enum )
 data State  = A | B | C | D | E | F | H deriving ( Eq, Ord, Show, Enum )
 
--- instance Show Symbol where
---   show O = "-"
---   show I = "x"
-
-------------------------------------------------------------------
--- a Tape is a pair of lists
--- the head is at the first element of the second list
--- the first list is reversed
-
-data RLE a = RLE a {-# UNPACK #-} !Int
-  deriving (Eq, Ord, Show, Functor)
-
-newtype RList a = RList [RLE a]
-  deriving (Eq, Ord, Show, Functor)
-
-instance Eq a => Semigroup (RList a) where
-  RList [] <> ys = ys
-  RList [RLE x n] <> RList (RLE y m : ys)
-    | x == y = RList (RLE y (n + m) : ys)
-  RList (x : xs) <> RList ys = RList (x : zs)
-    where
-      RList zs = RList xs <> RList ys
-
-instance Eq a => Monoid (RList a) where
-  mempty = RList []
-
-expand :: RList a -> [a]
-expand (RList xs) = concat [ replicate n x | RLE x n <- xs ]
-
-lengthR :: RList a -> Int
-lengthR (RList xs) = sum [ n | RLE _ n <- xs ]
-
-consR :: Eq a => a -> RList a -> RList a
-consR x (RList []) = RList [RLE x 1]
-consR x (RList xs@(RLE y n : ys))
-  | x == y    = RList (RLE y (n + 1) : ys)
-  | otherwise = RList (RLE x 1 : xs)
-
-headR :: RList a -> Maybe a
-headR (RList []) = Nothing
-headR (RList (RLE x _ : _)) = Just x
-
-dropR :: Int -> RList a -> RList a
-dropR 0 xs = xs
-dropR n (RList (RLE x m : xs))
-  | n < m     = RList (RLE x (m - n) : xs)
-  | otherwise = dropR (n - m) (RList xs)
-
-unconsR :: RList a -> Maybe (a, RList a)
-unconsR (RList []) = Nothing
-unconsR (RList (RLE x n : xs))
-  | n > 1     = Just (x, RList (RLE x (n - 1) : xs))
-  | otherwise = Just (x, RList xs)
-
-pattern (:@) :: Eq a => a -> RList a -> RList a
-pattern x :@ xs <- (unconsR -> Just (x, xs))
-  where
-    x :@ xs = consR x xs
-
-pattern NilR = RList []
-
-{-# COMPLETE NilR, (:@) #-}
-
-type Tape = Tape' Symbol
-data Tape' a = Tape {-# UNPACK #-} !Int (RList a) (RList a)
-  deriving (Eq, Ord, Show)
-
-tape0 :: (Eq a, Enum a) => Tape' a
-tape0 = Tape 0 mempty mempty
-
-look :: Tape -> Symbol
-look (Tape _ _ NilR)    = O
-look (Tape _ _ (x :@ _)) = x
-
-write :: Symbol -> Tape -> Tape
-write O (Tape n ls    NilR)     = Tape n ls       NilR
-write I (Tape n ls    NilR)     = Tape n ls (I :@ NilR)
-write O (Tape n ls (_ :@ NilR)) = Tape n ls       NilR
-write x (Tape n ls (_ :@ rs))   = Tape n ls (x :@   rs)
-
--- we can move (L)eft or (R)ight on a Tape
-
-data Dir = L | R
-  deriving ( Eq, Ord, Show, Enum )
-
-move :: Dir -> Tape -> Tape
-move L (Tape n  NilR          rs)  = Tape 0           NilR           rs -- bouncing
-move L (Tape n (O :@ ls)    NilR)  = Tape (n - 1)       ls         NilR
-move L (Tape n (x :@ ls)      rs)  = Tape (n - 1)       ls     (x :@ rs)
-move R (Tape n  ls      (x :@ rs)) = Tape (n + 1) (x :@ ls)    rs
-move R (Tape n  ls          NilR)  = Tape (n + 1) (O :@ ls)  NilR
+pattern O = Symbol 0
+pattern I = Symbol 1
 
 ------------------------------------------------------------------
 -- a Config is a pair of a state and a tape
@@ -151,23 +64,26 @@ run rls n conf = n `seq` case rules rls conf of
                            Nothing    -> (n, conf)
                            Just conf' -> run rls (n+1) conf'
 
+vizConf :: Int -> Int -> Config -> String
+vizConf w n conf@(s, Tape ln (expand -> ls) rrs) =
+  printf "\ESC[34m%5d\ESC[0m| " n
+   ++ concat [ " " ++ show x ++ " " | x <- take (div (w - 5) 3) $ reverse ls ]
+   ++ "\ESC[31m" ++ show s ++ "\ESC[0m"
+   ++ concat [ show x ++ "  " | x <- take (max 0 $ div (w - 5) 3 - ln) rs ]
+  where
+    rs = pad $ expand rrs
+    pad [] = [0]
+    pad rs = rs
+
 vizrun :: Int -> Int -> Machine -> Int -> Config -> IO (Int, Config)
 vizrun w 0 _ n conf = do
   putStrLn "Out of fuel!"
   pure (n, conf)
 vizrun w fuel rls !n conf@(s, Tape ln (expand -> ls) rrs) = do
-  putStrLn
-    $ printf "%4d " ln
-   ++ concat [ " " ++ show x ++ " " | x <- take (div (w - 5) 3) $ reverse ls ]
-   ++ "\ESC[31m" ++ show s ++ "\ESC[0m"
-   ++ concat [ show x ++ "  " | x <- take (max 0 $ div (w - 5) 3 - ln) rs ]
+  putStrLn $ vizConf w n conf
   case rules rls conf of
     Nothing    -> return (n, conf)
     Just conf' -> vizrun w (fuel - 1) rls (n + 1) conf'
-  where
-    rs = pad $ expand rrs
-    pad [] = [O]
-    pad rs = rs
 
 vrun :: Int -> Machine -> IO ()
 vrun n m = vizrun 200 n m 0 initConf >>= print . fst
@@ -280,8 +196,7 @@ traceRun' m = go
 -- * That way we don't have to enumerate transitions that are never taken! And there are a lot of
 --   machines with unused transitions.
 -- * You could also set a min value for termination and not generate a halting transition until that
---   many steps!
--- * Memory is a concern!
+--   many steps! Doesn't help very much.
 
 unvisited :: Int -> Machine -> Set (State, Symbol)
 unvisited fuel m = Set.difference allStates visited
@@ -347,7 +262,8 @@ smartGenerator n lo = Generator{..}
 
       -- (A, O) :-> (s, O, L) is never good, just make s the starting state!
       -- Not technically true, if you have a (s, O) :-> (A, O, L) transition you can
-      -- buy an extra step by making s the starting state.
+      -- buy an extra step by making s the starting state. But we can do that in a
+      -- postprocessing step.
       guard $ (s, i, o, d) /= (A, O, O, L)
 
       let rules' = (s, i) :-> (s', o, d) : curRules
@@ -430,7 +346,7 @@ runExplore' Generator{..} LoopDetector{..} fuel m =
   where
     initL = foldl stepL emptyL m
 
-    go 0 _ _ _ _ m _ = pure (Left GiveUp, reverse m)
+    go fuel _ _ _ _ m _ | fuel <= 0 = pure (Left GiveUp, reverse m)
     go _ n _ _ _ m (H, _) = pure (Right n, reverse m)
     go fuel !n g l ls m conf@(s, tape) = do
       let step = case [ sod | si :-> sod <- m, si == (s, i) ] of
@@ -449,27 +365,10 @@ runExplore' Generator{..} LoopDetector{..} fuel m =
       where
         i = look tape
 
-{-# INLINE applyRule #-}
-applyRule :: State -> (State, Symbol, Dir) -> Tape -> (Tape, Int)
-applyRule s (s', o, R) tape@(Tape w ls rs) =
-  case rs of
-    RList []              -> (Tape (w + 1) (o :@ ls) rs, 1)
-    RList (RLE i n : rs)
-      | s == s'   -> (Tape (w + n) (RList [RLE o n] <> ls) (RList rs), n)
-      | otherwise -> (move R $ write o tape, 1)
--- applyRule _ (_, o, R) tape = (move R $ write o tape, 1)
-applyRule s (s', o, L) tape@(Tape w (RList (RLE i n : ls)) (j :@ rs))
-  | s == s', i == j = (tape', n)
-  where tape' = Tape (w - n) (RList ls) $ i :@ add o rs
-        add O NilR = NilR
-        add o rs   = RList [RLE o n] <> rs
-applyRule _ (_, o, L) tape = (move L $ write o tape, 1)
--- applyRule _ (_, o, d) tape = (move d $ write o tape, 1)
-
 runSteps :: Int -> Machine -> (Either Reason Int, Int)
 runSteps fuel m = go fuel 0 0 (A, tape0)
   where
-    go 0 _ steps _ = (Left GiveUp, steps)
+    go fuel _ steps _ | fuel <= 0 = (Left GiveUp, steps)
     go fuel n steps (H, _) = (Right n, steps)
     go fuel !n !steps (s, tape) = go (fuel - n') (n + n') (steps + 1) (s', tape')
       where
@@ -492,13 +391,20 @@ explore n lo fuel = runExplore' (smartGenerator n lo) loopDetector fuel []
 
 -- The Dir is which direction we're moving (i.e. if dir is L we are looking at the right end of the
 -- macro symbol). We also need to know if we're at the left end of the tape!
-type MacroSymbol = [Symbol]
+type MacroSymbol = Symbol
 data Wall = LeftWall | NoWall
   deriving (Eq, Ord, Show)
 type MacroMachine = Map (State, MacroSymbol, Dir, Wall) (State, MacroSymbol, Dir, Int)
 
-compileMacroStep :: Machine -> (State, MacroSymbol, Dir, Wall) -> Either Reason (State, MacroSymbol, Dir, Int)
-compileMacroStep m (s, is, d, w) = go fuel 0 (s, tape)
+expandMacroSymbol :: Int -> MacroSymbol -> [Symbol]
+expandMacroSymbol k x = [ if testBit x i then I else O
+                        | i <- [k - 1, k - 2 .. 0] ]
+
+makeMacroSymbol :: [Symbol] -> MacroSymbol
+makeMacroSymbol = foldl' (\ x b -> shiftL x 1 .|. b) 0
+
+compileMacroStep :: Int -> Machine -> (State, MacroSymbol, Dir, Wall) -> Either Reason (State, MacroSymbol, Dir, Int)
+compileMacroStep k m (s, expandMacroSymbol k -> is, d, w) = go fuel 0 (s, tape)
   where
     tape | d == R    = ([], is)
          | otherwise = (ls, [r])
@@ -511,42 +417,88 @@ compileMacroStep m (s, is, d, w) = go fuel 0 (s, tape)
     move R (ls, r : rs) = (r : ls, rs)
 
     go 0 n (s, tape) = Left GiveUp
-    go fuel n (H, _) = Right (H, [], R, n)
+    go fuel n (H, _) = Right (H, 0, R, n)
     go fuel !n (s, (ls, i : rs))
-      | d == L, null ls, w == NoWall = Right (s', o : rs, L, n + 1)
-      | d == R, null rs              = Right (s', reverse (o : ls), R, n + 1)
+      | d == L, null ls, w == NoWall = Right (s', makeMacroSymbol (o : rs), L, n + 1)
+      | d == R, null rs              = Right (s', makeMacroSymbol (reverse (o : ls)), R, n + 1)
       | otherwise                    = go (fuel - 1) (n + 1) (s', move d (ls, o : rs))
       where
         (s', o, d) : _ = [o | si :-> o <- m, si == (s, i)]
 
+-- Questions
+--  - How to pick k for a given machine?
+--    - Looking at the tape? Or the history? When? After some fixed number of steps?
+--    - If you do fixed number of steps and only look at the tape you could get unlucky with the
+--      state of the tape!
+--    - Maybe record the number of times we've been at each tape position for each state and pick
+--      the chunk size that maximizes the mod 0 or mod -1 positions?
+--    - Or wait until we have a good batched move? Could be expensive if we don't find one!
+--  - How does this play with runExplore? When do you pick a k?
+--  - I'd like a type class for Symbol to make more things work also for macro machines, but
+--    not knowing the k at compile time makes it tricksy. KnownNat shenanigans?
+--    - Actually, the only thing I need for moves is a zero, and if I use a bit field for macro
+--      symbols that's a literal zero! And I actually don't need a type class at all!
+--  - The current bb5 (449k) has a pattern that's hard to optimise with a macro machine:
+--       I  I  I CI  O  I  I  I
+--       I  I  I  O DO  I  I  I
+--       I  I  I BO  I  I  I  I
+--       I  I CI  O  I  I  I  I
+--       I  I  O DO  I  I  I  I
+--       I  I BO  I  I  I  I  I
+--       I CI  O  I  I  I  I  I
+--       I  O DO  I  I  I  I  I
+--       I BO  I  I  I  I  I  I
+--      CI  O  I  I  I  I  I  I
+--    With k=3 we get
+--      C III L -> D IIO R (in 1)  III  IIIc OII
+--      D OII R -> B III L (in 1)  III  IIO dOII
+--      B IIO L -> C OII L (in 7)  III  IIOb III
+--                                 IIIc OII  III
+--                                 IIO dOII  III
+--                                 IIOb III  III
+--    and similar with other k's. The move we'd like to find is
+--      B IIO L -> B III L (in 9)
+--    but that's not valid! Because it depends on the macro digit on left having a right-most I.
+--    To batch we'd need a rule that can work on IIIⁿ, so it would be something like
+--      IIIⁿC O_ -> C OII IIIⁿ⁻¹ I_
+--    - The bb4 has the same pattern:
+--        0  0 B0  0  1  1  1  1  1
+--        0  0  0 C0  1  1  1  1  1
+--        0  0  0  0 A1  1  1  1  1
+--        0  0  0 B0  0  1  1  1  1
+--        0  0  0  0 C0  1  1  1  1
+--        0  0  0  0  0 A1  1  1  1
+--        0  0  0  0 B0  0  1  1  1
+
 runMacro :: Int -> Int -> Machine -> (Either Reason Int, Int, MacroMachine)
-runMacro k fuel m = go mempty fuel 0 0 (A, R, ([], []))
+runMacro = runMacro' False
+
+vizMacro :: Int -> Int -> Machine -> (Either Reason Int, Int, MacroMachine)
+vizMacro = runMacro' True
+
+runMacro' :: Bool -> Int -> Int -> Machine -> (Either Reason Int, Int, MacroMachine)
+runMacro' verbose k fuel m = go mempty fuel 0 0 (A, R, tape0)
   where
-    look (_, i : _) = i
-    look (_, [])    = replicate k O
+    wall (Tape 0 _ _) = LeftWall
+    wall _            = NoWall
 
-    wall ([], _) = LeftWall
-    wall _       = NoWall
+    tr n (s, _, tape)
+      | verbose   = trace (vizConf 120 n (s, tape))
+      | otherwise = id
 
-    write x (ls, _ : rs) = (ls, x : rs)
-    write x (ls, [])     = (ls, [x])
-
-    move L ([], rs)     = ([], rs)
-    move L (l : ls, rs) = (ls, l : rs)
-    move R (ls, r : rs) = (r : ls, rs)
-
-    go mm 0 _ steps _ = (Left GiveUp, steps, mm)
-    go mm fuel n steps (H, _, _) = (Right n, steps, mm)
+    go mm fuel n steps conf | fuel <= 0 = tr n conf (Left GiveUp, steps, mm)
+    go mm fuel n steps conf@(H, _, _) = tr n conf (Right n, steps, mm)
     go mm fuel !n !steps conf@(s, d, tape@(look -> i)) =
-        go mm' (fuel - n') (n + n') (steps + 1) (s', d', tape')
+      tr n conf $ go mm' (fuel - δ) (n + δ) (steps + 1) (s', d', tape')
       where
         sid = (s, i, d, wall tape)
-        ((s', o, d', n'), mm') =
+        ((s', o, d', n1), mm') =
           case Map.lookup sid mm of
             Just o  -> (o, mm)
             Nothing -> (o, Map.insert sid o mm)
-              where Right o = compileMacroStep m sid
-        tape' = move d' $ write o tape
+              where Right o = compileMacroStep k m sid
+        (tape', n2) = applyRule (s, d) ((s', d'), o, d') tape
+        δ = n1 * n2
 
 -- Compiled machines ------------------------------------------------------
 

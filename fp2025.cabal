@@ -14,7 +14,8 @@ extra-doc-files:    CHANGELOG.md
 
 executable fp2025
     main-is:          Turing.hs
-    -- other-modules:
+    other-modules:    RList
+                      Tape
     -- other-extensions:
     build-depends:    base,
                       array,
@@ -34,3 +35,4 @@ executable fp2025
       ViewPatterns
       RecordWildCards
       PatternSynonyms
+      DerivingStrategies
