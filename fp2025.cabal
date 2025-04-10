@@ -16,10 +16,12 @@ executable fp2025
     main-is:          Turing.hs
     other-modules:    RList
                       Tape
+                      Macro
     -- other-extensions:
     build-depends:    base,
                       array,
                       containers,
+                      pretty,
                       QuickCheck
     hs-source-dirs:   .
     default-language: GHC2021

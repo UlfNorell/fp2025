@@ -17,11 +17,14 @@ import Data.Array.Unboxed
 import Data.Array.Base (unsafeAt)
 import Data.Word
 import Data.Char
+import Data.Monoid
 import Text.Printf
+import Text.PrettyPrint.HughesPJClass hiding ((<>), first)
 import Test.QuickCheck
 
 import RList
 import Tape
+import Macro
 
 ------------------------------------------------------------------
 -- a Symbol is what is written on the tape
@@ -393,9 +396,12 @@ explore n lo fuel = runExplore' (smartGenerator n lo) loopDetector fuel []
 -- The Dir is which direction we're moving (i.e. if dir is L we are looking at the right end of the
 -- macro symbol). We also need to know if we're at the left end of the tape!
 type MacroSymbol = Symbol
-data Wall = LeftWall | NoWall
+data Wall = LeftWall | NoLeftWall
   deriving (Eq, Ord, Show)
-type MacroMachine = Map (State, MacroSymbol, Dir, Wall) (State, MacroSymbol, Dir, Int)
+type OldMacroMachine = Map (State, MacroSymbol, Dir, Wall) (State, MacroSymbol, Dir, Int)
+type MacroMachine = CMachine MacroState
+
+type MacroState = (State, Dir)
 
 expandMacroSymbol :: Int -> MacroSymbol -> [Symbol]
 expandMacroSymbol k x = [ if testBit x i then I else O
@@ -404,8 +410,33 @@ expandMacroSymbol k x = [ if testBit x i then I else O
 makeMacroSymbol :: [Symbol] -> MacroSymbol
 makeMacroSymbol = foldl' (\ x b -> shiftL x 1 .|. b) 0
 
-compileMacroStep :: Int -> Machine -> (State, MacroSymbol, Dir, Wall) -> Either Reason (State, MacroSymbol, Dir, Int)
-compileMacroStep k m (s, expandMacroSymbol k -> is, d, w) = go fuel 0 (s, tape)
+compileMacroStep :: Int -> Int -> Machine -> MacroState -> MacroSymbol -> WallPat -> Either Reason (CRule MacroState)
+compileMacroStep k fuel m (s, d) (i@(expandMacroSymbol k -> is)) wall = batchRule (s, d) <$> go AnyWall fuel 0 (s, tape)
+  where
+    tape | d == R    = ([], is)
+         | otherwise = (ls, [r])
+      where r : ls = reverse is
+    n = length $ nub [ s | (s, _) :-> _ <- m ]
+
+    move L ([], rs)     = ([], rs)
+    move L (l : ls, rs) = (ls, l : rs)
+    move R (ls, r : rs) = (r : ls, rs)
+
+    done wp s' o d' n = Right $ CRule (Pattern NoBatch wp [] [i] :=> RHS [] [Single o] d') (s', d') n
+
+    go _ 0 n (s, tape) = Left GiveUp
+    go wp fuel n (H, _) = done wp H 0 R n
+    go wp fuel !n (s, (ls, i : rs))
+      | d == L, null ls, wall == NoWall = done NoWall s' (makeMacroSymbol (o : rs)) L (n + 1)
+      | d == R, null rs                 = done wp s' (makeMacroSymbol $ reverse (o : ls)) R (n + 1)
+      | otherwise                       = go wp' (fuel - 1) (n + 1) (s', move d (ls, o : rs))
+      where
+        wp' | d == L, null ls = YesWall
+            | otherwise       = wp
+        (s', o, d) : _ = [o | si :-> o <- m, si == (s, i)]
+
+oldCompileMacroStep :: Int -> Machine -> (State, MacroSymbol, Dir, Wall) -> Either Reason (State, MacroSymbol, Dir, Int)
+oldCompileMacroStep k m (s, expandMacroSymbol k -> is, d, w) = go fuel 0 (s, tape)
   where
     tape | d == R    = ([], is)
          | otherwise = (ls, [r])
@@ -420,9 +451,9 @@ compileMacroStep k m (s, expandMacroSymbol k -> is, d, w) = go fuel 0 (s, tape)
     go 0 n (s, tape) = Left GiveUp
     go fuel n (H, _) = Right (H, 0, R, n)
     go fuel !n (s, (ls, i : rs))
-      | d == L, null ls, w == NoWall = Right (s', makeMacroSymbol (o : rs), L, n + 1)
-      | d == R, null rs              = Right (s', makeMacroSymbol (reverse (o : ls)), R, n + 1)
-      | otherwise                    = go (fuel - 1) (n + 1) (s', move d (ls, o : rs))
+      | d == L, null ls, w == NoLeftWall = Right (s', makeMacroSymbol (o : rs), L, n + 1)
+      | d == R, null rs                  = Right (s', makeMacroSymbol (reverse (o : ls)), R, n + 1)
+      | otherwise                        = go (fuel - 1) (n + 1) (s', move d (ls, o : rs))
       where
         (s', o, d) : _ = [o | si :-> o <- m, si == (s, i)]
 
@@ -477,11 +508,11 @@ runMacro = runMacro' False
 vizMacro :: Int -> Int -> Machine -> (Either Reason Int, Int, MacroMachine)
 vizMacro = runMacro' True
 
-runMacro' :: Bool -> Int -> Int -> Machine -> (Either Reason Int, Int, MacroMachine)
-runMacro' verbose k fuel m = go mempty fuel 0 0 (A, R, tape0)
+runMacroOld :: Bool -> Int -> Int -> Machine -> (Either Reason Int, Int, OldMacroMachine)
+runMacroOld verbose k fuel m = go mempty fuel 0 0 (A, R, tape0)
   where
     wall (Tape 0 _ _) = LeftWall
-    wall _            = NoWall
+    wall _            = NoLeftWall
 
     dw = length $ show $ 2 ^ k - 1
 
@@ -499,9 +530,37 @@ runMacro' verbose k fuel m = go mempty fuel 0 0 (A, R, tape0)
           case Map.lookup sid mm of
             Just o  -> (o, mm)
             Nothing -> (o, Map.insert sid o mm)
-              where Right o = compileMacroStep k m sid
+              where Right o = oldCompileMacroStep k m sid
         (tape', n2) = applyRule (s, d) ((s', d'), o, d') tape
         δ = n1 * n2
+
+runMacro' :: Bool -> Int -> Int -> Machine -> (Either Reason Int, Int, MacroMachine)
+runMacro' verbose k fuel m = go mempty fuel 0 0 ((A, R), tape0)
+  where
+    wall (Tape 0 _ _) = YesWall
+    wall _            = NoWall
+
+    dw = length $ show $ 2 ^ k - 1
+
+    tr n ((s, _), tape)
+      | verbose   = trace (vizConf 120 dw n (s, tape))
+      | otherwise = id
+
+    go mm fuel n steps conf | fuel <= 0 = tr n conf (Left GiveUp, steps, CMachine mm)
+    go mm fuel n steps conf@((H, _), _)   = tr n conf (Right n, steps, CMachine mm)
+    go mm fuel !n !steps conf@(s, tape@(look -> i)) =
+      tr n conf $ go mm' (fuel - δ) (n + δ) (steps + 1) (s', tape')
+      where
+        rules = fromMaybe [] $ Map.lookup s mm
+        (s', tape', δ, mm') =
+          case getFirst $ mconcat $ map (`applyCRule` tape) rules of
+            Nothing -> (s', tape', δ, Map.insertWith (++) s [cr] mm)
+              where Right cr = compileMacroStep k fuel m s i (wall tape)
+                    (s', tape', δ) =
+                      case getFirst $ applyCRule cr tape of
+                        Nothing -> error $ "\n" ++ vizConf 120 dw n (fst s, tape) ++ "\n" ++ printf "Failed to apply %s" (show cr)
+                        Just r  -> r
+            Just (s', tape', n) -> (s', tape', n, mm)
 
 -- Compiled machines ------------------------------------------------------
 
