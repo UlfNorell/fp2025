@@ -130,12 +130,12 @@ loopAnalysis m = LoopAnalysis
         is  = map fst g
         g'  = [ e | e@(_, o) <- g, elem o is ]
 
-unknown :: Int -> Int -> [Machine]
-unknown fuel n = [ m | m <- enum n, Left GiveUp <- [runTo fuel m] ]
+-- unknown :: Int -> Int -> [Machine]
+-- unknown fuel n = [ m | m <- enum n, Left GiveUp <- [runTo fuel m] ]
 
-runUnknown fuel n i = m <$ vrun fuel m
-  where
-    m : _ = drop i $ unknown fuel n
+-- runUnknown fuel n i = m <$ vrun fuel m
+--   where
+--     m : _ = drop i $ unknown fuel n
 
 
 loopCheck :: LoopAnalysis -> Int -> Config -> Config -> Maybe Reason
@@ -462,7 +462,7 @@ compileMacroStep k m (s, expandMacroSymbol k -> is, d, w) = go fuel 0 (s, tape)
 --    but that's not valid! Because it depends on the macro digit on left having a right-most I.
 --    To batch we'd need a rule that can work on IIIⁿ, so it would be something like
 --      IIIⁿC O_ -> C OII IIIⁿ⁻¹ I_
---    - bb4 has the same pattern:
+--    - bb4 has a similar pattern:
 --        0  0 B0  0  1  1  1  1  1
 --        0  0  0 C0  1  1  1  1  1
 --        0  0  0  0 A1  1  1  1  1
@@ -545,22 +545,22 @@ compile (sort -> rules) = Compiled
 
 -- Skeletons --------------------------------------------------------------
 
-data RuleSkeleton = (State, Symbol) :=> State
-  deriving (Show, Eq, Ord)
-type Skeleton = [RuleSkeleton]
+-- data RuleSkeleton = (State, Symbol) :=> State
+--   deriving (Show, Eq, Ord)
+-- type Skeleton = [RuleSkeleton]
 
--- Is the halting state reachable from state reachable?
-hReachable :: Skeleton -> Bool
-hReachable m = all (Set.member H) (reachability m)
+-- -- Is the halting state reachable from state reachable?
+-- hReachable :: Skeleton -> Bool
+-- hReachable m = all (Set.member H) (reachability m)
 
-reachability :: Skeleton -> Map State (Set State)
-reachability m = go $ Map.unionsWith (<>) [ Map.singleton s (Set.singleton s1) | (s, _) :=> s1 <- m ]
-  where
-    go g | g == g'   = g
-         | otherwise = go g'
-      where
-        g' = Map.unionsWith (<>) $ g : [ Map.singleton s (g Map.! s1)
-                                       | (s, _) :=> s1 <- m, s1 /= H ]
+-- reachability :: Skeleton -> Map State (Set State)
+-- reachability m = go $ Map.unionsWith (<>) [ Map.singleton s (Set.singleton s1) | (s, _) :=> s1 <- m ]
+--   where
+--     go g | g == g'   = g
+--          | otherwise = go g'
+--       where
+--         g' = Map.unionsWith (<>) $ g : [ Map.singleton s (g Map.! s1)
+--                                        | (s, _) :=> s1 <- m, s1 /= H ]
 
 -- Enumerating machines ---------------------------------------------------
 
@@ -571,69 +571,69 @@ reachability m = go $ Map.unionsWith (<>) [ Map.singleton s (Set.singleton s1) |
 --  3         1,215         297          265
 --  4       114,688       7,433        6,438
 --  5    17,578,125     228,045      199,319
-enumSkeletons :: Int -> [Skeleton]
-enumSkeletons n = filter postChecks $ go False [A] (tail states) [] inputs
-  where
-    states = take n [A ..]
-    inputs = [ (s, i) | s <- states, i <- [O, I] ]
+-- enumSkeletons :: Int -> [Skeleton]
+-- enumSkeletons n = filter postChecks $ go False [A] (tail states) [] inputs
+--   where
+--     states = take n [A ..]
+--     inputs = [ (s, i) | s <- states, i <- [O, I] ]
 
-    postChecks spine
-      | not $ hReachable spine = False
-      | otherwise              = True
+--     postChecks spine
+--       | not $ hReachable spine = False
+--       | otherwise              = True
 
-    go halted old new acc [] = [reverse acc | halted]
-    go halted old new acc ((s, i) : is) = do
-      -- If we gotten to s and it's still new, it's won't be reachable!
-      guard $ notElem s new
-      -- At most one halting transition and only consider the first of the "new" states
-      s' <- [ H | not halted ] ++ take 1 new ++ old
-      when (s' == H) $ guard $ (s, i) /= (A, O)
-      let (old', new')
-            | [s'] == take 1 new = (s' : old, drop 1 new)
-            | otherwise          = (old, new)
-          rule = (s, i) :=> s'
-      go (halted || s' == H) old' new' (rule : acc) is
+--     go halted old new acc [] = [reverse acc | halted]
+--     go halted old new acc ((s, i) : is) = do
+--       -- If we gotten to s and it's still new, it's won't be reachable!
+--       guard $ notElem s new
+--       -- At most one halting transition and only consider the first of the "new" states
+--       s' <- [ H | not halted ] ++ take 1 new ++ old
+--       when (s' == H) $ guard $ (s, i) /= (A, O)
+--       let (old', new')
+--             | [s'] == take 1 new = (s' : old, drop 1 new)
+--             | otherwise          = (old, new)
+--           rule = (s, i) :=> s'
+--       go (halted || s' == H) old' new' (rule : acc) is
 
-fillSkeleton :: Skeleton -> [Machine]
-fillSkeleton = go False []
-  where
-    go one acc [] = [ reverse acc | one ]
-    go one acc (i :=> H : rs) = go one (i :-> (H, O, L) : acc) rs
-    go !one acc (i :=> s' : rs) = do
-      o <- [O, I]
-      d <- [L, R]
-      go (one || o == I) (i :-> (s', o, d) : acc) rs
+-- fillSkeleton :: Skeleton -> [Machine]
+-- fillSkeleton = go False []
+--   where
+--     go one acc [] = [ reverse acc | one ]
+--     go one acc (i :=> H : rs) = go one (i :-> (H, O, L) : acc) rs
+--     go !one acc (i :=> s' : rs) = do
+--       o <- [O, I]
+--       d <- [L, R]
+--       go (one || o == I) (i :-> (s', o, d) : acc) rs
 
--- Number of machines
---  n           old        spines       H-reach
---  1             4             2             2
---  2         1,024           896           840
---  3       304,128       294,624       262,880
---  4   120,324,096   119,384,064   104,656,128
---  5
-enum :: Int -> [Machine]
-enum = concatMap fillSkeleton . enumSkeletons
+-- -- Number of machines
+-- --  n           old        spines       H-reach
+-- --  1             4             2             2
+-- --  2         1,024           896           840
+-- --  3       304,128       294,624       262,880
+-- --  4   120,324,096   119,384,064   104,656,128
+-- --  5
+-- enum :: Int -> [Machine]
+-- enum = concatMap fillSkeleton . enumSkeletons
 
-enum' :: Int -> [Machine]
-enum' n = go False [A] (tail states) [] inputs
-  where
-    states = take n [A ..]
-    inputs = [ (s, i) | s <- states, i <- [O, I] ]
+-- enum' :: Int -> [Machine]
+-- enum' n = go False [A] (tail states) [] inputs
+--   where
+--     states = take n [A ..]
+--     inputs = [ (s, i) | s <- states, i <- [O, I] ]
 
-    go halted old new acc [] = [reverse acc | halted]
-    go halted old new acc ((s, i) : is) = do
-      -- If we gotten to s and it's still new, it's won't be reachable!
-      guard $ notElem s new
-      -- At most one halting transition and only consider the first of the "new" states
-      s' <- [ H | not halted ] ++ take 1 new ++ old
-      o  <- [O, I]
-      d  <- [L, R]
-      when (s' == H) $ guard $ and [ o == O, d == L, (s, i) /= (A, O) ]
-      let (old', new')
-            | [s'] == take 1 new = (s' : old, drop 1 new)
-            | otherwise          = (old, new)
-          rule = (s, i) :-> (s', o, d)
-      go (halted || s' == H) old' new' (rule : acc) is
+--     go halted old new acc [] = [reverse acc | halted]
+--     go halted old new acc ((s, i) : is) = do
+--       -- If we gotten to s and it's still new, it's won't be reachable!
+--       guard $ notElem s new
+--       -- At most one halting transition and only consider the first of the "new" states
+--       s' <- [ H | not halted ] ++ take 1 new ++ old
+--       o  <- [O, I]
+--       d  <- [L, R]
+--       when (s' == H) $ guard $ and [ o == O, d == L, (s, i) /= (A, O) ]
+--       let (old', new')
+--             | [s'] == take 1 new = (s' : old, drop 1 new)
+--             | otherwise          = (old, new)
+--           rule = (s, i) :-> (s', o, d)
+--       go (halted || s' == H) old' new' (rule : acc) is
 
 data Class = Terminated | NonTerminated Reason
   deriving (Eq, Ord, Show)
@@ -691,13 +691,14 @@ main :: IO ()
 main = do
   let brute bound ms0 = () <$ bruteIO (bruteForce bound ms0)
   map read <$> getArgs >>= \ case
-    [n, bound, a, b] -> brute bound $ take b $ drop a $ enum n
+    -- [n, bound, a, b] -> brute bound $ take b $ drop a $ enum n
     -- [n, bound, a]    -> brute bound $ drop a $ enum n
     [n, lo, bound]    ->
       () <$ bruteIO (bruteExplore $ explore n lo bound)
-    [n, bound]       -> brute bound $ enum n
-    [n] ->
-      print $ length $ enum n
+    [n, bound]    ->
+      () <$ bruteIO (bruteExplore $ explore n 0 bound)
+    -- [n] ->
+    --   print $ length $ enum n
     -- [] -> do
     --   let go :: Int -> Int -> [Config] -> IO ()
     --       go _ _ [] = pure ()

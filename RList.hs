@@ -46,6 +46,7 @@ unconsR (RList (RLE x n : xs))
   | n > 1     = Just (x, RList (RLE x (n - 1) : xs))
   | otherwise = Just (x, RList xs)
 
+infixr 5 :@
 pattern (:@) :: Eq a => a -> RList a -> RList a
 pattern x :@ xs <- (unconsR -> Just (x, xs))
   where
