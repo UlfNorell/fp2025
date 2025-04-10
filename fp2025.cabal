@@ -38,3 +38,4 @@ executable fp2025
       RecordWildCards
       PatternSynonyms
       DerivingStrategies
+      MultiWayIf

@@ -56,6 +56,7 @@ data CRule s = CRule Clause s Int  -- Next state and cost
   deriving (Eq, Ord, Show)
 
 newtype CMachine s = CMachine (Map s [CRule s])
+  deriving newtype (Eq, Ord, Show)
 
 -- Applying rules ---------------------------------------------------------
 
@@ -63,7 +64,10 @@ newtype CMachine s = CMachine (Map s [CRule s])
 matchPattern :: Pattern -> Tape -> Maybe (Tape, Int)
 matchPattern (Pattern b wall lp rp) (Tape w l r) = do
   let batchLast = not $ (b, wall) == (BatchL, NoWall)
-  (l', bl) <- match L batchLast (b == BatchL) lp l
+      rh | rh :@ _ <- r = rh
+         | otherwise    = 0
+  (l', bl) <- if | null lp, b == BatchL -> match L batchLast True [rh] (rh :@ l)
+                 | otherwise            -> match L batchLast (b == BatchL) lp l
   (r', br) <- match R True      (b == BatchR) rp r
   guard $ matchWall wall l'
   pure (Tape (w - length lp - bl + 1) l' r', max bl br)
@@ -112,14 +116,26 @@ applyCRule (CRule cl s n) tape = do
 -- Smarts -----------------------------------------------------------------
 
 batchRule :: (Show s, Eq s) => s -> CRule s -> CRule s
-batchRule s r = trace (printf "batchRule %s (%s)" (show s) (show r)) $ batchRule' s r
+batchRule s r = -- trace (printf "batchRule %s (%s)" (show s) (show r)) $
+  batchRule' s r
 
 batchRule' :: Eq s => s -> CRule s -> CRule s
-batchRule' s rule@(CRule _ s' _) | s /= s' = rule
+batchRule' s rule@(CRule (Pattern b w _ _ :=> _) s' _)
+  | s /= s' || b /= NoBatch || w == YesWall = rule
 batchRule' _ (CRule (Pattern NoBatch w lsP rsP :=> RHS ls (Single r : rs) R) s' n)
-  | w /= YesWall
-  , rP : _ <- reverse rsP
-  , map Single rsP == rs ++ [Single rP] = CRule (Pattern BatchR w lsP rsP :=> RHS ls (Batched r : rs) R) s' n
+  | rP : _ <- reverse rsP
+  , matchL
+  , matchR rP = CRule (Pattern BatchR w lsP rsP :=> RHS ls (Batched r : rs) R) s' n
+  where
+    matchL    = map Single lsP == take (length lsP) (Single r : ls)
+    matchR rP = map Single rsP == rs ++ [Single rP]
+batchRule' _ (CRule (Pattern NoBatch w lsP rsP :=> RHS ls (Single r : rs) L) s' n)
+  | rL : _ <- reverse (take 1 rsP ++ lsP)
+  , matchL rL
+  , matchR rL = CRule (Pattern BatchL w lsP rsP :=> RHS ls (Batched r : rs) L) s' n
+  where
+    matchL rL = map Single lsP == drop 1 (ls ++ [Single rL])
+    matchR rL = map Single rsP == take (length rsP) (take 1 (ls ++ [Single rL]) ++ Single r : rs)
 batchRule' _ rule = rule
 
 -- Pretty printing --------------------------------------------------------
