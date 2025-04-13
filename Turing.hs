@@ -535,7 +535,7 @@ runMacroOld verbose k fuel m = go mempty fuel 0 0 (A, R, tape0)
         δ = n1 * n2
 
 runMacro' :: Bool -> Int -> Int -> Machine -> (Either Reason Int, Int, MacroMachine)
-runMacro' verbose k fuel m = go mempty fuel 0 0 ((A, R), tape0)
+runMacro' verbose k fuel m = go emptyCMachine Nothing fuel 0 0 ((A, R), tape0)
   where
     wall (Tape 0 _ _) = YesWall
     wall _            = NoWall
@@ -546,21 +546,29 @@ runMacro' verbose k fuel m = go mempty fuel 0 0 ((A, R), tape0)
       | verbose   = trace (vizConf 120 dw n (s, tape))
       | otherwise = id
 
-    go mm fuel n steps conf | fuel <= 0 = tr n conf (Left GiveUp, steps, CMachine mm)
-    go mm fuel n steps conf@((H, _), _)   = tr n conf (Right n, steps, CMachine mm)
-    go mm fuel !n !steps conf@(s, tape@(look -> i)) =
-      tr n conf $ go mm' (fuel - δ) (n + δ) (steps + 1) (s', tape')
+    go mm lastRule fuel n steps conf | fuel <= 0 = tr n conf (Left GiveUp, steps, mm)
+    go mm lastRule fuel n steps conf@((H, _), _)   = tr n conf (Right n, steps, mm)
+    go mm lastRule fuel !n !steps conf@(s, tape@(look -> i)) =
+      tr n conf $ go mm'' (Just (s0, cr')) (fuel - δ) (n + δ) (steps + 1) (s', tape')
       where
-        rules = fromMaybe [] $ Map.lookup s mm
-        (s', tape', δ, mm') =
-          case getFirst $ mconcat $ map (`applyCRule` tape) rules of
-            Nothing -> (s', tape', δ, Map.insertWith (++) s [cr] mm)
+        rules = getCRules s mm
+        (s', tape', δ, mm', cr) =
+          case [ (o, cr) | cr <- rules, Just o <- [applyCRule cr tape] ] of
+            [] -> (s', tape', δ, addCRule s cr mm, cr)
               where Right cr = compileMacroStep k fuel m s i (wall tape)
                     (s', tape', δ) =
-                      case getFirst $ applyCRule cr tape of
+                      case applyCRule cr tape of
                         Nothing -> error $ "\n" ++ vizConf 120 dw n (fst s, tape) ++ "\n" ++ printf "Failed to apply %s" (show cr)
                         Just r  -> r
-            Just (s', tape', n) -> (s', tape', n, mm)
+            ((s', tape', n), cr) : _ -> (s', tape', n, mm, cr)
+        (mm'', s0, cr') = fromMaybe (mm', s, cr) $ do
+          (s0, cr1) <- lastRule
+          cr2@(CRule (Pattern _ _ lp rp :=> _) _ _) <- batchRule s0 <$> combineRules cr1 cr
+          guard $ length (lp ++ rp) < 6
+          let ret | verbose = trace (show $ vcat [ text "combine", nest 3 $ vcat [ pPrint cr1, pPrint cr ]
+                                                 , text "->" <+> pPrint cr2 ]) . pure
+                  | otherwise = pure
+          ret (addCRule s0 cr2 mm', s0, cr2)
 
 -- Compiled machines ------------------------------------------------------
 
@@ -1161,16 +1169,6 @@ example = [ (A, O) :-> (B, I, R)
 
 instance Arbitrary State where
   arbitrary = elements [A .. H]
-
-instance Arbitrary Symbol where
-  arbitrary = elements [O, I]
-  shrink O = []
-  shrink I = [O]
-
-instance Arbitrary Dir where
-  arbitrary = elements [L, R]
-  shrink L = []
-  shrink R = [L]
 
 instance Arbitrary a => Arbitrary (RLE a) where
   arbitrary = RLE <$> arbitrary <*> choose (1, 10)

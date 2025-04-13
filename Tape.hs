@@ -4,6 +4,7 @@ module Tape where
 import Control.Monad
 import Data.Map (Map)
 import Data.Bits
+import Test.QuickCheck
 import RList
 
 newtype Symbol = Symbol Int
@@ -57,4 +58,15 @@ applyRule s (s', o, L) tape@(Tape w (RList (RLE i n : ls)) (j :@ rs))
         add o rs   = RList [RLE o (n + 1)] <> rs
 applyRule _ (_, o, L) tape = (move L $ write o tape, 1)
 -- applyRule _ (_, o, d) tape = (move d $ write o tape, 1)
+
+-- QuickCheck tests -------------------------------------------------------
+
+instance Arbitrary Dir where
+  arbitrary = elements [L, R]
+  shrink L = []
+  shrink R = [L]
+
+instance Arbitrary Symbol where
+  arbitrary = Symbol <$> choose (0, 1)
+  shrink (Symbol x) = map Symbol (shrink x)
 

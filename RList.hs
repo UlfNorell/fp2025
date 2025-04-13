@@ -21,6 +21,9 @@ instance Eq a => Monoid (RList a) where
 expand :: RList a -> [a]
 expand (RList xs) = concat [ replicate n x | RLE x n <- xs ]
 
+toRList :: Eq a => [a] -> RList a
+toRList = foldr consR NilR
+
 lengthR :: RList a -> Int
 lengthR (RList xs) = sum [ n | RLE _ n <- xs ]
 
