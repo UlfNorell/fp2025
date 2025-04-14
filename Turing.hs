@@ -67,9 +67,9 @@ run rls n conf = n `seq` case rules rls conf of
                            Nothing    -> (n, conf)
                            Just conf' -> run rls (n+1) conf'
 
-vizConf :: Int -> Int -> Int -> Config -> String
-vizConf w dw n conf@(s, Tape ln rls@(expand -> ls) rrs) =
-  printf "\ESC[34m%5d\ESC[0m| " n
+vizConf :: Int -> Int -> Int -> Config -> Maybe Dir -> String
+vizConf w dw n conf@(s, Tape ln rls@(expand -> ls) rrs) d =
+  printf "\ESC[34m%5d\ESC[0m%s| " n (maybe "" ((" " ++) . show) d)
    ++ concat [ " " ++ showD x ++ " " | x <- take (div (w - 5) 3) $ reverse ls ]
    ++ "\ESC[31m" ++ show s ++ "\ESC[0m"
    ++ concat [ showD x ++ "  " | x <- take (max 0 $ div (w - 5) 3 - ln) rs ]
@@ -84,7 +84,7 @@ vizrun w 0 _ n conf = do
   putStrLn "Out of fuel!"
   pure (n, conf)
 vizrun w fuel rls !n conf@(s, Tape ln (expand -> ls) rrs) = do
-  putStrLn $ vizConf w 1 n conf
+  putStrLn $ vizConf w 1 n conf Nothing
   case rules rls conf of
     Nothing    -> return (n, conf)
     Just conf' -> vizrun w (fuel - 1) rls (n + 1) conf'
@@ -516,8 +516,8 @@ runMacroOld verbose k fuel m = go mempty fuel 0 0 (A, R, tape0)
 
     dw = length $ show $ 2 ^ k - 1
 
-    tr n (s, _, tape)
-      | verbose   = trace (vizConf 120 dw n (s, tape))
+    tr n (s, d, tape)
+      | verbose   = trace (vizConf 120 dw n (s, tape) (Just d))
       | otherwise = id
 
     go mm fuel n steps conf | fuel <= 0 = tr n conf (Left GiveUp, steps, mm)
@@ -542,29 +542,31 @@ runMacro' verbose k fuel m = go emptyCMachine Nothing fuel 0 0 ((A, R), tape0)
 
     dw = length $ show $ 2 ^ k - 1
 
-    tr n ((s, _), tape)
-      | verbose   = trace (vizConf 120 dw n (s, tape))
+    tr n ((s, d), tape)
+      | verbose   = trace (vizConf 120 dw n (s, tape) (Just d))
       | otherwise = id
 
     go mm lastRule fuel n steps conf | fuel <= 0 = tr n conf (Left GiveUp, steps, mm)
     go mm lastRule fuel n steps conf@((H, _), _)   = tr n conf (Right n, steps, mm)
-    go mm lastRule fuel !n !steps conf@(s, tape@(look -> i)) =
-      tr n conf $ go mm'' (Just (s0, cr')) (fuel - δ) (n + δ) (steps + 1) (s', tape')
+    go mm lastRule fuel !n !steps conf@(s, tape@(look -> i))
+      | Left err <- mcr = (Left err, steps, mm)
+      | otherwise       = tr n conf $ go mm'' (Just (s0, cr')) (fuel - δ) (n + δ) (steps + 1) (s', tape')
       where
         rules = getCRules s mm
-        (s', tape', δ, mm', cr) =
+        (s', tape', δ, mm', cr, mcr) =
           case [ (o, cr) | cr <- rules, Just o <- [applyCRule cr tape] ] of
-            [] -> (s', tape', δ, addCRule s cr mm, cr)
-              where Right cr = compileMacroStep k fuel m s i (wall tape)
+            [] -> (s', tape', δ, addCRule s cr mm, cr, mcr)
+              where mcr@(~(Right cr)) = compileMacroStep k fuel m s i (wall tape)
                     (s', tape', δ) =
                       case applyCRule cr tape of
-                        Nothing -> error $ "\n" ++ vizConf 120 dw n (fst s, tape) ++ "\n" ++ printf "Failed to apply %s" (show cr)
+                        Nothing -> error $ "\n" ++ vizConf 120 dw n (fst s, tape) (Just $ snd s) ++ "\n" ++ printf "Failed to apply %s" (show cr)
                         Just r  -> r
-            ((s', tape', n), cr) : _ -> (s', tape', n, mm, cr)
+            ((s', tape', n), cr) : _ -> (s', tape', n, mm, cr, Right cr)
         (mm'', s0, cr') = fromMaybe (mm', s, cr) $ do
           (s0, cr1) <- lastRule
           cr2@(CRule (Pattern _ _ lp rp :=> _) _ _) <- batchRule s0 <$> combineRules cr1 cr
-          guard $ length (lp ++ rp) < 6
+          -- guard False
+          guard $ length (lp ++ rp) < 4
           let ret | verbose = trace (show $ vcat [ text "combine", nest 3 $ vcat [ pPrint cr1, pPrint cr ]
                                                  , text "->" <+> pPrint cr2 ]) . pure
                   | otherwise = pure

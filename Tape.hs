@@ -17,8 +17,11 @@ data Dir = L | R
 data Tape = Tape {-# UNPACK #-} !Int (RList Symbol) (RList Symbol)
   deriving (Eq, Ord, Show)
 
+mkTape :: [Symbol] -> [Symbol] -> Tape
+mkTape ls rs = Tape (length ls) (toRList ls) (toRList rs)
+
 tape0 :: Tape
-tape0 = Tape 0 mempty mempty
+tape0 = mkTape [] []
 
 look :: Tape -> Symbol
 look (Tape _ _ NilR)     = 0

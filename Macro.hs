@@ -7,6 +7,7 @@ import Data.Map (Map)
 import Data.Monoid
 import Data.Maybe
 import Data.Bits
+import Data.List
 import Text.Printf
 import Text.PrettyPrint.HughesPJClass hiding ((<>))
 import RList
@@ -68,10 +69,11 @@ addCRule s r (CMachine m) = CMachine $ Map.insertWith ins s [r] m
   where
     -- Batched rules have priority
     ins new old = foldr ins1 old new
+    subsumedBy (CRule (lhs1 :=> _) _ n1) (CRule (lhs2 :=> _) _ n2) = lhs1 == lhs2 && n1 >= n2
     ins1 r@(CRule (Pattern NoBatch _ _ _ :=> _) _ _)
          (r1@(CRule (Pattern b _ _ _ :=> _) _ _) : rs)
       | b /= NoBatch = r1 : ins1 r rs
-    ins1 r rs = r : rs
+    ins1 r rs = r : filter (not . subsumedBy r) rs
 
 getCRules :: Ord s => s -> CMachine s -> [CRule s]
 getCRules s (CMachine m) = fromMaybe [] $ Map.lookup s m
@@ -143,18 +145,24 @@ batchRule' s rule@(CRule (Pattern b w _ _ :=> _) s' _)
 batchRule' _ (CRule (Pattern NoBatch w lsP rsP :=> RHS ls (Single r : rs) R) s' n)
   | rP : _ <- reverse rsP
   , matchL
-  , matchR rP = CRule (Pattern BatchR w lsP rsP :=> RHS ls (Batched r : rs) R) s' n
+  , matchR rP = CRule (Pattern BatchR w lsP rsP :=> RHS ls' (r' : rs) R) s' n
   where
-    matchL    = map Single lsP == take (length lsP) (Single r : ls)
-    matchR rP = map Single rsP == rs ++ [Single rP]
+    r' : ls' = batchLast (Single r : ls)
+    matchL    = map Single lsP `isPrefixOf` ([Single r] ++ ls)
+    matchR rP = map Single rsP `isPrefixOf` (rs ++ [Single rP]) -- TODO: allow eating multiple copies in one step!
 batchRule' _ (CRule (Pattern NoBatch w lsP rsP :=> RHS ls (Single r : rs) L) s' n)
   | rL : _ <- reverse (take 1 rsP ++ lsP)
   , matchL rL
-  , matchR rL = CRule (Pattern BatchL w lsP rsP :=> RHS ls (Batched r : rs) L) s' n
+  , matchR rL = CRule (Pattern BatchL w lsP rsP :=> RHS ls (batchLast $ Single r : rs) L) s' n
   where
     matchL rL = map Single lsP == drop 1 (ls ++ [Single rL])
     matchR rL = map Single rsP == take (length rsP) (take 1 (ls ++ [Single rL]) ++ Single r : rs)
 batchRule' _ rule = rule
+
+batchLast :: [RHSSymbol] -> [RHSSymbol]
+batchLast [Single r] = [Batched r]
+batchLast (r : rs) = r : batchLast rs
+batchLast _ = error "impossible"
 
 r1, r2, r3 :: CRule String
 r1 = CRule (Pattern NoBatch NoWall [] [7]  :=> RHS [] [Single 3]           L) "BL" 1
@@ -174,10 +182,6 @@ dropEitherPrefix xs [] = pure (xs, [])
 dropEitherPrefix (x : xs) (y : ys) = guard (x == y) *> dropEitherPrefix xs ys
 
 combineRules :: (Show s, Eq s) => CRule s -> CRule s -> Maybe (CRule s)
--- combineRules      (CRule (Pattern NoBatch NoWall []    [rp1] :=> RHS [] [r1] L) _ n1)
---                   (CRule (Pattern NoBatch w      []    [rp2] :=> RHS [] [r2] d) s n2)
---   | checks = Just (CRule (Pattern NoBatch w      [rp2] [rp1] :=> RHS [] [r2, r1] d) s (n1 + n2))
---   where checks = True
 combineRules (CRule (Pattern b1 w1 _ _ :=> _) _ _)
              (CRule (Pattern b2 w2 _ _ :=> _) _ _)
   | or [b1 /= NoBatch, b2 /= NoBatch, w1 == YesWall, w2 == YesWall] = Nothing
@@ -294,7 +298,7 @@ instance Arbitrary s => Arbitrary (CRule s) where
   shrink (CRule c s n) =
     [ CRule c s n | c <- shrink c ] ++
     [ CRule c s n | s <- shrink s ] ++
-    [ CRule c s n | n <- shrink n ]
+    [ CRule c s n | n <- shrink n, n > 0 ]
 
 newtype St = St String
   deriving newtype (Eq, Ord, Show)
@@ -302,10 +306,13 @@ newtype St = St String
 instance Arbitrary St where
   arbitrary = elements $ map St ["AL", "AR", "BL", "BR", "CL", "CR"]
 
+ppTape :: Tape -> Doc
+ppTape (Tape _ ls rs) = hsep (map (text . show) $ expand ls) <+> (text "∙" <> hsep (map (text . show) $ expand rs))
+
 prop_combine :: CRule St -> CRule St -> Property
 prop_combine r1 r2 =
   case combineRules r1 r2 of
-    Nothing -> False ==> True
+    Nothing -> discard
     Just r3@(CRule (Pattern _ _ lp rp :=> _) _ _) ->
       collect (length $ lp ++ rp) $
       case applyCRule r3 tape of
@@ -321,7 +328,6 @@ prop_combine r1 r2 =
               pure (s, tape2, n + m)
             applyR3 = applyCRule r3 tape
             onErr = do
-              let ppTape (Tape _ ls rs) = hsep (map (text . show) $ expand ls) <+> (text "∙" <> hsep (map (text . show) $ expand rs))
               print $ text "r1 =" <+> pPrint r1
               print $ text "r2 =" <+> pPrint r2
               print $ text "r3 =" <+> pPrint r3
@@ -335,4 +341,39 @@ prop_combine r1 r2 =
                 Nothing            -> pure ()
               print $ text "=>{r3}" <+> ppTape tape3
       where
-        tape = Tape (length lp) (toRList lp) (toRList rp)
+        tape = mkTape lp rp
+
+prop_batch :: Property
+prop_batch =
+  forAllShrink genBatched shrinkBatched $ \ (r, rS) -> theProp r rS :: Property
+  where
+  genBatched :: Gen (CRule St, CRule St)
+  genBatched = do
+      r@(CRule _ s _) <- arbitrary
+      pure (r, batchRule s r)
+    `suchThat` uncurry (/=)
+  shrinkBatched (r, _) =
+    [ (r, rS) | r@(CRule _ s _) <- shrink r, let rS = batchRule s r, r /= rS ]
+
+  reps = 5
+
+  theProp r rS@(CRule (Pattern b _ lsP rsP :=> _) _ _) =
+    applyRules 0 [rS] tape $ \ res1@(_, n) ->
+    whenFail (printf "(%d steps)\n" n) $
+    applyRules 0 (replicate (reps + 1) r) tape $ \ res2@(_, n) ->
+    whenFail (printf "(%d steps)\n" n) $
+      res1 === res2
+    where
+      tape = case b of
+               BatchL  -> mkTape (lsP ++ replicate reps (last $ take 1 rsP ++ lsP)) rsP
+               BatchR  -> mkTape lsP (rsP ++ replicate reps (last rsP))
+               NoBatch -> error "impossible"
+      applyRules n [] tape k = whenFail (print $ ppTape tape) $ k (tape, n)
+      applyRules !n (r : rs) tape k =
+        case applyCRule r tape of
+          Nothing -> whenFail (print $ vcat [ text "Failed to apply"
+                                            , nest 2 $ pPrint r
+                                            , text "to"
+                                            , nest 2 $ ppTape tape ]) False
+          Just (_, tape1, m) ->
+            whenFail (print $ vcat [ ppTape tape, nest 2 $ pPrint r ]) $ applyRules (n + m) rs tape1 k
