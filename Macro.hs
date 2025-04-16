@@ -36,9 +36,12 @@ Plan
 -}
 
 data Batching = NoBatch
-              | BatchL   -- Bind any number of the left-most symbol
-              | BatchR   -- Bind any number of the right-most symbol
+              | Batch Dir Int  -- Bind any multiple of k number of the left/right-most symbol
   deriving (Eq, Ord, Show)
+
+isBatch :: Dir -> Batching -> Bool
+isBatch d (Batch d' _) = d == d'
+isBatch _ NoBatch      = False
 
 data WallPat = AnyWall | NoWall | YesWall
   deriving (Eq, Ord, Show)
@@ -83,12 +86,15 @@ getCRules s (CMachine m) = fromMaybe [] $ Map.lookup s m
 -- The integer is the multiplicity of the batched match (1 if NoBatch)
 matchPattern :: Pattern -> Tape -> Maybe (Tape, Int)
 matchPattern (Pattern b wall lp rp) (Tape w l r) = do
-  let batchLast = not $ (b, wall) == (BatchL, NoWall)
+  let batchLast
+        | wall /= NoWall = True
+        | isBatch L b    = False
+        | otherwise      = True
       rh | rh :@ _ <- r = rh
          | otherwise    = 0
-  (l', bl) <- if | null lp, b == BatchL -> match L batchLast True [rh] (rh :@ l)
-                 | otherwise            -> match L batchLast (b == BatchL) lp l
-  (r', br) <- match R True      (b == BatchR) rp r
+  (l', bl) <- if | null lp, isBatch L b -> match L batchLast True [rh] (rh :@ l)
+                 | otherwise            -> match L batchLast (isBatch L b) lp l
+  (r', br) <- match R True (isBatch R b) rp r
   guard $ matchWall wall l'
   pure (Tape (w - length lp - bl + 1) l' r', max bl br)
   where
@@ -142,21 +148,28 @@ batchRule s r = -- trace (printf "batchRule %s (%s)" (show s) (show r)) $
 batchRule' :: Eq s => s -> CRule s -> CRule s
 batchRule' s rule@(CRule (Pattern b w _ _ :=> _) s' _)
   | s /= s' || b /= NoBatch || w == YesWall = rule
-batchRule' _ (CRule (Pattern NoBatch w lsP rsP :=> RHS ls (Single r : rs) R) s' n)
-  | rP : _ <- reverse rsP
-  , matchL
-  , matchR rP = CRule (Pattern BatchR w lsP rsP :=> RHS ls' (r' : rs) R) s' n
+batchRule' _ (CRule (Pattern NoBatch w lsP rsP :=> RHS ls (Single r : rs) d) s' n)
+  | Just r <- go d = r
   where
-    r' : ls' = batchLast (Single r : ls)
-    matchL    = map Single lsP `isPrefixOf` ([Single r] ++ ls)
-    matchR rP = map Single rsP `isPrefixOf` (rs ++ [Single rP]) -- TODO: allow eating multiple copies in one step!
-batchRule' _ (CRule (Pattern NoBatch w lsP rsP :=> RHS ls (Single r : rs) L) s' n)
-  | rL : _ <- reverse (take 1 rsP ++ lsP)
-  , matchL rL
-  , matchR rL = CRule (Pattern BatchL w lsP rsP :=> RHS ls (batchLast $ Single r : rs) L) s' n
-  where
-    matchL rL = map Single lsP == drop 1 (ls ++ [Single rL])
-    matchR rL = map Single rsP == take (length rsP) (take 1 (ls ++ [Single rL]) ++ Single r : rs)
+    matchAndPad z [] [] = pure 0
+    matchAndPad z (p : ps) []
+      | z == p = succ <$> matchAndPad z ps []
+    matchAndPad z (p : ps) (Single x : xs)
+      | x == p = matchAndPad z ps xs
+    matchAndPad _ _ _ = Nothing
+
+    go R = do
+      rP : _ <- pure $ reverse rsP
+      guard $ map Single lsP `isPrefixOf` ([Single r] ++ ls)
+      k <- matchAndPad rP rsP rs
+      guard $ k > 0
+      let r' : ls' = batchLast (Single r : ls)
+      pure $ CRule (Pattern (Batch R k) w lsP rsP :=> RHS ls' (r' : rs) R) s' n
+    go L = do
+      rL : _ <- pure $ reverse (take 1 rsP ++ lsP)
+      guard $ map Single lsP == drop 1 (ls ++ [Single rL])
+      guard $ map Single rsP `isPrefixOf` take (length rsP) (take 1 (ls ++ [Single rL]) ++ Single r : rs)
+      pure $ CRule (Pattern (Batch L 1) w lsP rsP :=> RHS ls (batchLast $ Single r : rs) L) s' n
 batchRule' _ rule = rule
 
 batchLast :: [RHSSymbol] -> [RHSSymbol]
@@ -164,10 +177,13 @@ batchLast [Single r] = [Batched r]
 batchLast (r : rs) = r : batchLast rs
 batchLast _ = error "impossible"
 
-r1, r2, r3 :: CRule String
-r1 = CRule (Pattern NoBatch NoWall [] [7]  :=> RHS [] [Single 3]           L) "BL" 1
-r2 = CRule (Pattern NoBatch NoWall [] [0]  :=> RHS [] [Single 0]           R) "CR" 1
-r3 = CRule (Pattern NoBatch NoWall [0] [7] :=> RHS [] [Single 0, Single 3] R) "CR" 2
+r1 :: CRule String
+r1 = CRule (Pattern NoBatch AnyWall [] [7, 7] :=> RHS [Single 7] [Single 7] R) "AR" 6
+
+-- r1, r2, r3 :: CRule String
+-- r1 = CRule (Pattern NoBatch NoWall [] [7]  :=> RHS [] [Single 3]           L) "BL" 1
+-- r2 = CRule (Pattern NoBatch NoWall [] [0]  :=> RHS [] [Single 0]           R) "CR" 1
+-- r3 = CRule (Pattern NoBatch NoWall [0] [7] :=> RHS [] [Single 0, Single 3] R) "CR" 2
 
 allSingle :: [RHSSymbol] -> Maybe [Symbol]
 allSingle = mapM unSingle
@@ -236,8 +252,8 @@ instance Pretty Pattern where
       batchIf True  = zipWith ($) (Batched : repeat Single)
       batchIf False = map Single
 
-      ppL (reverse -> ls) = sep $ map pPrint $ batchIf (b == BatchL) ls
-      ppR rs = sep $ map pPrint $ batchIf (b == BatchR) rs
+      ppL (reverse -> ls) = sep $ map pPrint $ batchIf (isBatch L b) ls
+      ppR rs = sep $ map pPrint $ batchIf (isBatch R b) rs
 
 instance Pretty RHS where
   pPrint (RHS ls rs d) =
@@ -365,9 +381,9 @@ prop_batch =
       res1 === res2
     where
       tape = case b of
-               BatchL  -> mkTape (lsP ++ replicate reps (last $ take 1 rsP ++ lsP)) rsP
-               BatchR  -> mkTape lsP (rsP ++ replicate reps (last rsP))
-               NoBatch -> error "impossible"
+               Batch L k -> mkTape (lsP ++ replicate (k * reps) (last $ take 1 rsP ++ lsP)) rsP
+               Batch R k -> mkTape lsP (rsP ++ replicate (k * reps) (last rsP))
+               NoBatch   -> error "impossible"
       applyRules n [] tape k = whenFail (print $ ppTape tape) $ k (tape, n)
       applyRules !n (r : rs) tape k =
         case applyCRule r tape of
