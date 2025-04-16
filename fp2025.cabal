@@ -15,6 +15,7 @@ extra-doc-files:    CHANGELOG.md
 executable fp2025
     main-is:          Turing.hs
     other-modules:    RList
+                      CList
                       Tape
                       Macro
     -- other-extensions:
