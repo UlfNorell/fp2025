@@ -8,7 +8,7 @@ import Control.Applicative
 import Control.Monad
 import Data.Foldable
 import Data.Either
-import Data.List hiding (take, drop, reverse, isPrefixOf, isSuffixOf)
+import Data.List hiding (take, drop, isPrefixOf, isSuffixOf, uncons)
 import Data.List qualified as List
 import Data.Maybe
 import Test.QuickCheck
@@ -19,25 +19,24 @@ import Text.Printf
 -- Types
 ------------------------------------------------------------------------
 
-data CLE a = Atom a | CList a :^ Int -- Power always ≥ 2
-  deriving (Eq, Ord, Show)
+data Rep a = a :^ Int -- Nonempty list and power ≥ 1
+  deriving (Eq, Ord, Show, Functor)
 
-newtype CList a = CList [CLE a]
+newtype CList a = CList [Rep [a]]
   deriving (Eq, Ord, Show, Foldable)
 
-unCList :: CList a -> [CLE a]
+unCList :: CList a -> [Rep [a]]
 unCList (CList xs) = xs
 
 ------------------------------------------------------------------------
 -- Instances
 ------------------------------------------------------------------------
 
-instance Foldable CLE where
-  foldMap f (xs :^ n) = fold (replicate n $ foldMap f xs)
-  foldMap f (Atom x)  = f x
+instance Foldable Rep where
+  foldMap f (x :^ n) = fold (replicate n $ f x)
 
 instance Eq a => Semigroup (CList a) where
-  CList xs <> ys = foldr consC ys xs
+  CList xs <> ys = foldr consRep ys xs
 
 instance Eq a => Monoid (CList a) where
   mempty = CList []
@@ -51,100 +50,81 @@ instance Eq a => Monoid (CList a) where
 fromList :: Eq a => [a] -> CList a
 fromList = foldr cons mempty
 
--- reverse ----------------------------------------------------------------
-
-reverse :: Eq a => CList a -> CList a
-reverse (CList xs) = foldl (flip consC) mempty $ map rev xs
-  where
-    rev x@Atom{}  = x
-    rev (xs :^ n) = reverse xs :^ n
-
 -- Prefix and suffix ------------------------------------------------------
 
-dropPrefix :: CList a -> CList a -> Maybe (CList a)
-dropPrefix (CList xs) (CList ys) = foldM (flip go) ys xs
+dropPrefix :: Eq a => CList a -> CList a -> Maybe (CList a)
+dropPrefix (CList xs) (CList ys) = go xs ys
   where
-    go (Atom x) ys = do
-      (y, ys) <- uncons ys
-      guard $ x == y
-      pure ys
-    go (CList xs :^ n) ys = undefined
+    go ([] :^ _ : xss) yss = go xss yss
+    go xss ([] :^ _ : yss) = go xss yss
+    go (_ :^ 0 : xss) yss  = go xss yss
+    go xss (_ :^ 0 : yss)  = go xss yss
+    go [] yss = pure $ CList yss
+    go _ [] = Nothing
+    go ((x : xs) :^ 1 : xss) ((y : ys) :^ 1 : yss)
+      | x == y    = go (xs :^ 1 : xss) (ys :^ 1 : yss)
+      | otherwise = Nothing
+    go (xs :^ n : xss) (ys :^ m : yss)
+      | xs == ys, n <= m = go xss (ys :^ (m - n) : yss)
+    go (xs :^ n : xss) yss
+      | n > 1 = go (xs :^ 1 : xs :^ (n - 1) : xss) yss
+    go xss (ys :^ n : yss)
+      | n > 1 = go xss (ys :^ 1 : ys :^ (n - 1) : yss)
 
-isPrefixOf :: CList a -> CList a -> Bool
+isPrefixOf :: (Pretty a, Eq a) => CList a -> CList a -> Bool
 isPrefixOf xs ys = isJust $ dropPrefix xs ys
-
-isSuffixOf :: CList a -> CList a -> Bool
-isSuffixOf xs ys = isPrefixOf (rawReverse xs) (rawReverse ys)
 
 ------------------------------------------------------------------------
 -- Internal functions
 ------------------------------------------------------------------------
 
--- RepView ----------------------------------------------------------------
-
-data RepView a = RepView { rvPrefix :: [CLE a]  -- rvPrefix is a suffix of rvRepeat
-                         , rvRepeat :: CList a
-                         , rvCount  :: Int
-                         , rvSuffix :: [CLE a]
-                         }
-  deriving (Eq, Ord, Show)
-
-fromRepView :: RepView a -> CList a
-fromRepView (RepView xs ys n zs) = CList (xs ++ [ys :^ n] ++ zs)
-
--- Raw reverse ------------------------------------------------------------
-
--- Ignoring invariant
-rawReverse :: CList a -> CList a
-rawReverse (CList xs) = CList $ List.reverse $ map rev xs
-  where
-    rev x@Atom{}  = x
-    rev (xs :^ n) = rawReverse xs :^ n
-
 -- uncons -----------------------------------------------------------------
 
 uncons :: CList a -> Maybe (a, CList a)
 uncons (CList []) = Nothing
-uncons (CList (Atom x : xs)) = pure (x, CList xs)
-uncons (CList (xs :^ n : ys)) = do
-  (x, CList zs) <- uncons xs
-  if | n > 2     -> pure (x, CList (zs ++ xs :^ (n - 1) : ys))
-     | otherwise -> pure (x, CList (zs ++ xs ++ ys))
+uncons (CList ((x : xs) :^ n : ys))
+  | n == 1    = pure (x, CList $ xs :^ 1 : ys)
+  | otherwise = pure (x, CList $ xs :^ 1 : (x : xs) :^ (n - 1) : ys)
+uncons (CList ([] :^ _ : ys)) = uncons (CList ys)
 
 -- cons -------------------------------------------------------------------
 
 cons :: Eq a => a -> CList a -> CList a
-cons = consC . Atom
+cons x xs = consRep ([x] :^ 1) xs
 
-consC :: Eq a => CLE a -> CList a -> CList a
-consC x (CList xs) = CList $ fromMaybe (x : xs) $
-  case x of
-    Atom x -> consC' [Atom x] xs
-    CList ys :^ n
-      | Just zs <- consCs ys xs -> pure $ if n > 2 then rec (CList ys :^ (n - 1)) zs
-                                                   else foldr rec zs ys
-      | otherwise -> consC' [x] xs
+consRep :: Eq a => Rep [a] -> CList a -> CList a
+consRep x (CList xs) = CList $ squash $ go x xs
   where
-    rec x xs = unCList $ consC x (CList xs)
+    go (_ :^ 0) zs = zs
+    go ([] :^ _) zs = zs
+    go (xs :^ n) (ys :^ m : zs)
+      | xs == ys                = go (ys :^ (n + m)) zs
+    go (xs :^ n) (ys :^ m : zs)
+      | Just xs' <- dropSuffix ys xs = go (xs :^ (n - 1)) $ go (xs' :^ 1) $ go (ys :^ (m + 1)) zs
+    go (xs :^ n) (ys :^ 1 : zs)
+      | Just ys' <- dropPrefixL xs ys = go (xs :^ (n + 1)) $ go (ys' :^ 1) zs
+    go (xs :^ 1) ((y : ys) :^ 1 : zs) = go ((xs ++ [y]) :^ 1) $ go (ys :^ 1) zs
+    go (xs :^ 1) ys = compress xs ++ ys
+    go x xs = x : xs
 
-    consCs [y]      xs = consC' [y] xs
-    consCs (y : ys) xs
-      | Just zs <- consCs ys xs = pure $ rec y zs
-      | otherwise               = consC' [y] (ys ++ xs)
-
-    consC' [CList xs :^ n] ys
-      | Just zs <- dropPrefix xs ys = pure $ rec (CList xs :^ (n + 1)) zs
-      | CList ys :^ m : zs <- ys
-      , xs == ys                    = pure $ rec (CList xs :^ (n + m)) zs
-    consC' xs ys
-      | Just zs <- dropPrefix xs ys = pure $ rec (double xs) zs
+    compress [] = []
+    compress (x : xs) = go ([x] :^ 1) xs
       where
-        double [xs :^ n] = xs :^ (2 * n)
-        double xs        = CList xs :^ 2
-    consC' xs (c@(CList ys) :^ n : zs)
-      | xs == ys = pure $ rec (c :^ (n + 1)) zs
-    consC' xs (y : ys) = consC' (xs ++ [y]) ys
-    consC' _ _ = Nothing
+        go (xs :^ n) ys
+          | Just zs <- dropPrefixL xs ys = go (xs :^ (n + 1)) zs
+        go (xs :^ 1) (y : ys) = go ((xs ++ [y]) :^ 1) ys
+        go r (y : ys) = r : go ([y] :^ 1) ys
+        go r [] = [r]
+
+    squash [] = []
+    squash (x : xs) = goS [x] xs
+      where
+        goS xs ys
+          | Just zs <- dropPrefixL xs ys = go (toList (CList xs) :^ 2) zs
+        goS xs (ys :^ n : zs)
+          | n > 1, Just (CList []) <- dropPrefix (CList xs) (CList [ys :^ 1]) = ys :^ (n + 1) : zs
+        goS xs (y : ys) = goS (xs ++ [y]) ys
+        goS xs [] = xs
 
 ------------------------------------------------------------------------
 -- Utility functions
@@ -160,10 +140,13 @@ splits []       = []
 splits [x]      = []
 splits (x : xs) = ([x], xs) : [ (x : ys, zs) | (ys, zs) <- splits xs ]
 
-dropPrefix :: Eq a => [a] -> [a] -> Maybe [a]
-dropPrefix      []       ys  = pure ys
-dropPrefix (x : xs) (y : ys) = guard (x == y) *> dropPrefix xs ys
-dropPrefix (_ :  _)      []  = Nothing
+dropPrefixL :: Eq a => [a] -> [a] -> Maybe [a]
+dropPrefixL      []       ys  = pure ys
+dropPrefixL (x : xs) (y : ys) = guard (x == y) *> dropPrefixL xs ys
+dropPrefixL (_ :  _)      []  = Nothing
+
+dropSuffix :: Eq a => [a] -> [a] -> Maybe [a]
+dropSuffix xs ys = List.reverse <$> dropPrefixL (List.reverse xs) (List.reverse ys)
 
 ------------------------------------------------------------------------
 -- Pretty printing
@@ -179,15 +162,22 @@ showP = show . pPrint
 pShow :: Show a => a -> Doc
 pShow = text . show
 
-instance Pretty a => Pretty (CList a) where
-  pPrintPrec _ _ (CList []) = "ε"
-  pPrintPrec _ p (CList xs) = parensIf (p > 0 && notAtom xs) $ hcat $ map pPrint xs
-    where notAtom [Atom{}] = False
-          notAtom _        = True
+newtype Seq a = Seq [a]
 
-instance Pretty a => Pretty (CLE a) where
-  pPrintPrec _ _ (Atom x)  = pPrint x
-  pPrintPrec l p (xs :^ n) = parensIf (p > 0) $ pPrintPrec l 1 xs <> pow n
+instance Pretty a => Pretty (Seq a) where
+  pPrintPrec l p (Seq [])  = "ε"
+  pPrintPrec l p (Seq [x]) = pPrintPrec l p x
+  pPrintPrec l p (Seq xs)  = parensIf (p > 0) $ hcat $ map (pPrintPrec l 1) xs
+
+instance Pretty a => Pretty (CList a) where
+  pPrintPrec _ _ (CList [])         = "ε"
+  pPrintPrec l p (CList [[x] :^ 1]) = pPrintPrec l p x
+  pPrintPrec _ p (CList xs)         = parensIf (p > 0) $ pPrint $ Seq $ (map . fmap) Seq xs
+
+instance Pretty a => Pretty (Rep a) where
+  pPrintPrec l p (x :^ n)
+    | n == 1    = pPrintPrec l p x
+    | otherwise = parensIf (p > 1) $ pPrintPrec l 2 x <> pow n
     where
       pow = text . map ((ds !!) . subtract (fromEnum '0') . fromEnum) . show
       ds  = "⁰¹²³⁴⁵⁶⁷⁸⁹"
@@ -228,25 +218,15 @@ instance Arbitrary Bit where
 newtype RawCList a = Raw (CList a)
   deriving newtype Show
 
-instance Arbitrary a => Arbitrary (RawCList a) where
-  arbitrary = Raw <$> sized go
-    where
-      go n
-        | n < 2 = CList . (:[]) . Atom <$> arbitrary
-        | otherwise = frequency [ (1, go 0)
-                                , (5, CList <$> (mapM goC =<< genSum n))
-                                ]
+instance Arbitrary a => Arbitrary (Rep a) where
+  arbitrary = (:^) <$> arbitrary <*> choose (1, 8)
+  shrink (x :^ n) =
+    [ x :^ n | x <- shrink x ] ++
+    [ x :^ n | n <- shrink n, n > 0 ]
 
-      goC 0 = Atom <$> arbitrary
-      goC n = frequency [ (1, Atom <$> arbitrary)
-                        , (4, (:^) <$> go n <*> choose (2, 8))
-                        ]
-  shrink (Raw (CList xs)) = Raw . CList . concat <$> shrinkList shrinkCLE (map pure xs)
-    where
-      shrinkCLE [Atom x] = [] : [ [Atom x] | x <- shrink x ]
-      shrinkCLE [xs :^ n] = [] : unCList xs :
-        [ [xs :^ n] | Raw xs <- shrink (Raw xs) ] ++
-        [ [xs :^ n] | n <- shrink n, n > 1 ]
+instance Arbitrary a => Arbitrary (RawCList a) where
+  arbitrary = Raw . CList <$> arbitrary
+  shrink (Raw (CList xs)) = Raw . CList <$> shrink xs
 
 -- Roundtrip properties ---------------------------------------------------
 
@@ -267,11 +247,13 @@ prop_clist_roundtrip xs =
 -- Operation: cons --------------------------------------------------------
 
 prop_cons :: Bit -> CList Bit -> Property
-prop_cons x xs = cons x xs === fromList (x : toList xs)
-
-prop_cons_inv :: Bit -> CList Bit -> Property
-prop_cons_inv x xs = counterexample (show $ cons x xs) $
-  invariant xs ==> prop_invariant (cons x xs)
+prop_cons x xs = counterexampleP (vcat [ "x    =" <+> pPrint x
+                                       , "xs   =" <+> pPrint xs
+                                       , "x:xs =" <+> pPrint (cons x xs)
+                                       ]) $
+  conjoin [ toList (cons x xs) === x : toList xs
+          , invariant xs ==> prop_invariant (cons x xs)
+          ]
 
 -- Operation: <> ----------------------------------------------------------
 
@@ -284,19 +266,10 @@ prop_append xs ys = counterexampleP (vcat [ "xs       =" <+> pPrint xs
   where
     zs = xs <> ys
 
--- Operation: reverse -----------------------------------------------------
+-- Operation: isPrefixOf --------------------------------------------------
 
-prop_reverse :: CList Bit -> Property
-prop_reverse xs = toList (reverse xs) === List.reverse (toList xs)
-
-prop_reverse_inv :: CList Bit -> Property
-prop_reverse_inv xs = counterexample (showP xs) $
-  prop_invariant (reverse xs)
-
--- Operation: isSuffixOf --------------------------------------------------
-
-prop_isSuffixOf :: RawCList Bit -> RawCList Bit -> Property
-prop_isSuffixOf (Raw xs) (Raw ys) = check xs ys .&&. check ys xs
+prop_isPrefixOf :: RawCList Bit -> RawCList Bit -> Property
+prop_isPrefixOf (Raw xs) (Raw ys) = check xs ys .&&. check ys xs
   where
     check xs ys =
       counterexampleP (vcat [ "xs  =" <+> pPrint xs
@@ -304,7 +277,7 @@ prop_isSuffixOf (Raw xs) (Raw ys) = check xs ys .&&. check ys xs
                             , "xsL =" <+> pPrint xsL
                             , "ysL =" <+> pPrint ysL
                             ]) $
-        isSuffixOf xs ys === List.isSuffixOf xsL ysL
+        isPrefixOf xs ys === List.isPrefixOf xsL ysL
       where
         xsL = toList xs
         ysL = toList ys
@@ -315,37 +288,64 @@ invariant :: (Eq a, Show a, Pretty a) => CList a -> Bool
 invariant = isRight . checkInvariant
 
 checkInvariant :: (Eq a, Show a, Pretty a) => CList a -> Either Doc ()
-checkInvariant xs = mapLeft ("Invariant failed for" <+> (pPrint xs <> ":") $$) $ do
-    let xss = sublists xs
-    mapM_ checkRepeats xss
-    mapM_ checkConsecutive xss
-    mapM_ checkExponents (concat xss)
+checkInvariant xs@(CList cs) = mapLeft ("Invariant failed for" <+> (pPrint xs <> ":") $$) $ do
+    sequence_ [ Left $ "Exponent too small:" <+> pPrint x | x@(_ :^ n) <- cs, n < 1 ]
+    checkConsecutive cs
+    checkCompact xs
   where
-    sublists (CList xs) = xs : concat [ sublists ys | ys :^ _ <- xs ]
+    checkConsecutive (xs :^ n : ys :^ m : zs)
+      | n == 1, m == 1 = Left $ sep [ "Adjacent powers of 1:"
+                                    , nest 2 $ pPrint (Seq xs)
+                                    , "and"
+                                    , nest 2 $ pPrint (Seq ys)
+                                    ]
+      | xs == ys = Left $ sep [ "Unmerged repeats"
+                              , nest 2 $ pPrint (Seq xs :^ n)
+                              , nest 2 $ pPrint (Seq ys :^ m)
+                              ]
+    checkConsecutive (x : xs) = checkConsecutive xs
+    checkConsecutive []       = pure ()
 
-    checkExponents x@(_ :^ n) | n < 2 = Left $ "Exponent too small:" <+> pPrint x
-    checkExponents x@(CList [_ :^ _] :^ _) = Left $ "Nested exponents:" <+> pPrint x
-    checkExponents _ = pure ()
+    reverseRaw = CList . List.reverse . map rev . unCList
+      where rev (xs :^ n) = List.reverse xs :^ n
 
-    checkRepeats xs =
-      mapM_ checkRepeat $ splits xs
+    checkCompact xs = do
+        checkFolds . unCList $ reverseRaw xs
+        mapM_ localRepeat $ unCList xs
+        globalRepeat $ unCList xs
       where
-        checkRepeat (ys, zs)
-          | List.isPrefixOf ys zs = Left ("Repeated" <+> pPrint ys)
-          | otherwise             = pure ()
+        checkFolds (xs :^ n : pre)
+          | List.isPrefixOf xs (toList (CList pre)) = Left $ sep [ pPrint $ reverseRaw $ CList [xs :^ n]
+                                                                 , "should expand into"
+                                                                 , pPrint $ reverseRaw $ CList pre
+                                                                 ]
+        checkFolds (_ : xs) = checkFolds xs
+        checkFolds [] = pure ()
 
-    checkConsecutive = go . List.reverse
-      where
-        go (c@(x :^ _) : ys)
-          | List.isSuffixOf xs zs =
-              Left $ sep [ pPrint $ CList $ List.reverse ys
-                         , nest 2 "should fold into"
-                         , pPrint c ]
+        cleanPrefix :: Eq a => [Rep [a]] -> [Rep [a]] -> Bool
+        cleanPrefix xs ys = any ((== toList (CList xs)) . toList . CList) $ inits ys
+
+        globalRepeat [] = pure ()
+        globalRepeat (x : xs) = go [x] xs
           where
-            xs = toList x
-            zs = toList (CList $ List.reverse ys)
-        go (_ : xs) = go xs
-        go []       = pure ()
+            go xs ys
+              | cleanPrefix xs ys =
+                  Left $ sep [ pPrint $ CList xs
+                             , "should fold into"
+                             , pPrint $ CList ys
+                             ]
+            go xs (y : ys) = go (xs ++ [y]) ys
+            go _ _ = pure ()
+
+        localRepeat top@((x : xs) :^ n)
+          | n == 1    = check [x] xs
+          | otherwise = pure ()
+          where
+            check xs ys
+              | List.isPrefixOf xs ys = Left $ hsep ["Repeated", pPrint (Seq xs), "in", pPrint (CList [top])]
+            check xs (y : ys) = check (xs ++ [y]) ys
+            check _ [] = pure ()
+        localRepeat ([] :^ n) = Left "Repeat of empty list"
 
 prop_invariant :: CList Bit -> Property
 prop_invariant xs = case checkInvariant xs of
