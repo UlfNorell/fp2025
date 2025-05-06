@@ -1,7 +1,7 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE OverloadedStrings #-}
 -- | Compressed lists.
-module CList where
+module Data.CList where
 
 import Prelude hiding (take, drop, reverse)
 import Control.Applicative

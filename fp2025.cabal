@@ -15,9 +15,9 @@ extra-doc-files:    CHANGELOG.md
 executable fp2025
     main-is:          Turing.hs
     other-modules:    RList
-                      CList
                       Tape
                       Macro
+                      Data.CList
     -- other-extensions:
     build-depends:    base,
                       array,
