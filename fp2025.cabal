@@ -25,6 +25,7 @@ executable fp2025
                       Turing.Types
                       Turing.Tape
                       Turing.Machine
+                      Turing.Machine.Macro
                       Turing.Examples
     -- other-extensions:
     build-depends:    base,
