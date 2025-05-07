@@ -1,14 +1,14 @@
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE OverloadedStrings #-}
 -- | Compressed lists.
-module Data.CList where
+module Data.List.Compressed where
 
 import Prelude hiding (take, drop, reverse)
 import Control.Applicative
 import Control.Monad
 import Data.Foldable
 import Data.Either
-import Data.List hiding (take, drop, isPrefixOf, isSuffixOf, uncons)
+import Data.List hiding (take, drop, reverse, isPrefixOf, isSuffixOf, uncons)
 import Data.List qualified as List
 import Data.Maybe
 import Test.QuickCheck
@@ -19,10 +19,10 @@ import Text.Printf
 -- Types
 ------------------------------------------------------------------------
 
-data Rep a = a :^ Int -- Nonempty list and power ≥ 1
+data Rep a = a :^ Int -- Power ≥ 1
   deriving (Eq, Ord, Show, Functor)
 
-newtype CList a = CList [Rep [a]]
+newtype CList a = CList [Rep [a]] -- Nonempty list of a's
   deriving (Eq, Ord, Show, Foldable)
 
 unCList :: CList a -> [Rep [a]]
@@ -45,10 +45,22 @@ instance Eq a => Monoid (CList a) where
 -- API
 ------------------------------------------------------------------------
 
+pattern NilC = CList []
+pattern (:@) :: Eq a => a -> CList a -> CList a
+pattern x :@ xs <- (uncons -> Just (x, xs))
+  where x :@ xs = cons x xs
+{-# COMPLETE NilC, (:@) #-}
+
 -- fromList ---------------------------------------------------------------
 
 fromList :: Eq a => [a] -> CList a
 fromList = foldr cons mempty
+
+-- reverse ----------------------------------------------------------------
+
+reverse :: CList a -> CList a
+reverse = CList . List.reverse . map rev . unCList
+  where rev (xs :^ n) = List.reverse xs :^ n
 
 -- Prefix and suffix ------------------------------------------------------
 
@@ -82,6 +94,9 @@ isPrefixOf xs ys = isJust $ dropPrefix xs ys
 
 uncons :: CList a -> Maybe (a, CList a)
 uncons (CList []) = Nothing
+uncons (CList ([x] :^ n : ys))
+  | n == 1    = pure (x, CList ys)
+  | otherwise = pure (x, CList $ [x] :^ (n - 1) : ys)
 uncons (CList ((x : xs) :^ n : ys))
   | n == 1    = pure (x, CList $ xs :^ 1 : ys)
   | otherwise = pure (x, CList $ xs :^ 1 : (x : xs) :^ (n - 1) : ys)
@@ -165,7 +180,7 @@ pShow = text . show
 newtype Seq a = Seq [a]
 
 instance Pretty a => Pretty (Seq a) where
-  pPrintPrec l p (Seq [])  = "ε"
+  pPrintPrec l p (Seq [])  = "EMPTY"
   pPrintPrec l p (Seq [x]) = pPrintPrec l p x
   pPrintPrec l p (Seq xs)  = parensIf (p > 0) $ hcat $ map (pPrintPrec l 1) xs
 
@@ -282,6 +297,20 @@ prop_isPrefixOf (Raw xs) (Raw ys) = check xs ys .&&. check ys xs
         xsL = toList xs
         ysL = toList ys
 
+-- Operation: uncons ------------------------------------------------------
+
+prop_uncons :: CList Bit -> Property
+prop_uncons xs =
+  case uncons xs of
+    Nothing -> xs === mempty
+    Just (x, ys) ->
+      counterexampleP (vcat [ "xs =" <+> pPrint xs
+                            , "   =" <+> pPrint x <+> ":" <+> pPrint ys
+                            ]) $
+        conjoin [ prop_invariant ys
+                , cons x ys === xs
+                ]
+
 -- Invariant checking -----------------------------------------------------
 
 invariant :: (Eq a, Show a, Pretty a) => CList a -> Bool
@@ -294,11 +323,6 @@ checkInvariant xs@(CList cs) = mapLeft ("Invariant failed for" <+> (pPrint xs <>
     checkCompact xs
   where
     checkConsecutive (xs :^ n : ys :^ m : zs)
-      | n == 1, m == 1 = Left $ sep [ "Adjacent powers of 1:"
-                                    , nest 2 $ pPrint (Seq xs)
-                                    , "and"
-                                    , nest 2 $ pPrint (Seq ys)
-                                    ]
       | xs == ys = Left $ sep [ "Unmerged repeats"
                               , nest 2 $ pPrint (Seq xs :^ n)
                               , nest 2 $ pPrint (Seq ys :^ m)
@@ -306,18 +330,15 @@ checkInvariant xs@(CList cs) = mapLeft ("Invariant failed for" <+> (pPrint xs <>
     checkConsecutive (x : xs) = checkConsecutive xs
     checkConsecutive []       = pure ()
 
-    reverseRaw = CList . List.reverse . map rev . unCList
-      where rev (xs :^ n) = List.reverse xs :^ n
-
     checkCompact xs = do
-        checkFolds . unCList $ reverseRaw xs
+        checkFolds . unCList $ reverse xs
         mapM_ localRepeat $ unCList xs
         globalRepeat $ unCList xs
       where
         checkFolds (xs :^ n : pre)
-          | List.isPrefixOf xs (toList (CList pre)) = Left $ sep [ pPrint $ reverseRaw $ CList [xs :^ n]
+          | List.isPrefixOf xs (toList (CList pre)) = Left $ sep [ pPrint $ reverse $ CList [xs :^ n]
                                                                  , "should expand into"
-                                                                 , pPrint $ reverseRaw $ CList pre
+                                                                 , pPrint $ reverse $ CList pre
                                                                  ]
         checkFolds (_ : xs) = checkFolds xs
         checkFolds [] = pure ()

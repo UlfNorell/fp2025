@@ -13,11 +13,19 @@ extra-doc-files:    CHANGELOG.md
 -- extra-source-files:
 
 executable fp2025
-    main-is:          Turing.hs
+    main-is:          Main.hs
     other-modules:    RList
                       Tape
                       Macro
-                      Data.CList
+                      Turing
+                      -- New stuff
+                      Data.List.Compressed
+                      Data.List.Compressed.Pattern
+                      Turing.Scratch
+                      Turing.Types
+                      Turing.Tape
+                      Turing.Machine
+                      Turing.Examples
     -- other-extensions:
     build-depends:    base,
                       array,
