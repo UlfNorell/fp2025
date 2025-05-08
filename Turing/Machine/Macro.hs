@@ -5,6 +5,9 @@ import Control.Applicative
 import Control.Monad
 import Data.List.Compressed qualified as CList
 import Data.List.Compressed (CList, pattern NilC, pattern (:@))
+import Data.Map (Map)
+import Data.Map qualified as Map
+import Data.Maybe
 import Text.Pretty
 import Text.Printf
 import Test.QuickCheck.Extra
@@ -14,28 +17,49 @@ import Turing.Types
 import Turing.Tape
 import Turing.Machine
 
--- Starting without batching ----------------------------------------------
+
+------------------------------------------------------------------------
+-- Types
+------------------------------------------------------------------------
 
 type LHS = Tape
 type RHS = Tape
-data MacroRule = (State, LHS) :=> (State, RHS, Dir, Int)
+data MacroRule = LHS :=> (State, RHS, Dir, Int)
   deriving (Eq, Ord, Show)
-type MacroMachine = [MacroRule]
+newtype MacroMachine = MacroMachine (Map State [MacroRule])
+  deriving Show
+
+rules :: MacroMachine -> State -> [MacroRule]
+rules (MacroMachine m) s = fromMaybe [] $ Map.lookup s m
+
+addRule :: State -> MacroRule -> MacroMachine -> MacroMachine
+addRule s r (MacroMachine m) = MacroMachine $ Map.insertWith ins s [r] m
+  where
+    ins rs1 rs2 = rs1 ++ filter (not . subsumed) rs2
+      where subsumed r = any (`subsumes` r) rs1
+    subsumes (lhs :=> _) (lhs' :=> _) = lhs == lhs'
 
 ruleCost :: MacroRule -> Int
 ruleCost (_ :=> (_, _, _, w)) = w
 
--- Building macro rules ---------------------------------------------------
+instance Semigroup MacroMachine where
+  MacroMachine m <> MacroMachine m' = MacroMachine $ Map.unionWith (++) m m'
 
-primMacroRule :: Rule -> MacroRule
-primMacroRule ((s, i) :-> (s', o, d)) = (s, Tape mempty i mempty) :=> (s', Tape mempty o mempty, d, 1)
+instance Monoid MacroMachine where
+  mempty = MacroMachine mempty
 
-matchLHS :: LHS -> Tape -> Maybe (CList Symbol, CList Symbol)
-matchLHS (Tape lp x rp) (Tape ls y rs)
-  | x == y
-  , Just ls' <- CList.dropPrefix lp ls
-  , Just rs' <- CList.dropPrefix rp rs = pure (ls', rs')
-matchLHS _ _ = Nothing
+------------------------------------------------------------------------
+-- Building macro rules
+------------------------------------------------------------------------
+
+basicRule :: Rule -> MacroMachine
+basicRule ((s, i) :-> (s', o, d)) = MacroMachine $
+  Map.singleton s [Tape mempty i mempty :=> (s', Tape mempty o mempty, d, 1)]
+
+fromPrim :: Machine -> MacroMachine
+fromPrim = foldMap basicRule
+
+-- Combining rules --------------------------------------------------------
 
 plugLHS :: CList Symbol -> LHS -> CList Symbol -> LHS
 plugLHS = plugRHS
@@ -70,25 +94,41 @@ chainMatch (Tape lp x rp) (Tape ls y (r :@ rs)) R
 chainMatch _ _ _ = Nothing
 
 combineRules :: MacroRule -> MacroRule -> Maybe MacroRule
-combineRules ((s₁, lhs₁) :=> (s₁', rhs₁, d₁, w₁))
-             ((s₂, lhs₂) :=> (s₂', rhs₂, d₂, w₂))
-  | s₁' == s₂
-  , Just ((lp₁, rp₁), (ls₂, rs₂)) <- chainMatch lhs₂ rhs₁ d₁ = do
+combineRules (lhs₁ :=> (_, rhs₁, d₁, w₁))
+             (lhs₂ :=> (s₂', rhs₂, d₂, w₂))
+  | Just ((lp₁, rp₁), (ls₂, rs₂)) <- chainMatch lhs₂ rhs₁ d₁ = do
     let lhs@(Tape lp _ rp) = plugLHS lp₁ lhs₁ rp₁
         rhs = plugRHS ls₂ rhs₂ rs₂
     guard $ CList.length lp + CList.length rp < 10
-    pure $ (s₁, lhs) :=> (s₂', rhs, d₂, w₁ + w₂)
+    pure $ lhs :=> (s₂', rhs, d₂, w₁ + w₂)
 combineRules _ _ = Nothing
 
--- Running a macro machine ------------------------------------------------
+-- Batching ---------------------------------------------------------------
+
+batchRight :: LHS -> RHS -> Maybe (CList Symbol, CList Symbol)
+batchRight (Tape lp x rp) (Tape ls y rs)
+  | Just rp₂ <- CList.dropPrefix rs (x :@ rp)
+  , Just ls₂ <- CList.dropPrefix lp (y :@ ls) = Just (ls₂, rp₂)
+batchRight _ _ = Nothing
+
+------------------------------------------------------------------------
+-- Running
+------------------------------------------------------------------------
+
+matchLHS :: LHS -> Tape -> Maybe (CList Symbol, CList Symbol)
+matchLHS (Tape lp x rp) (Tape ls y rs)
+  | x == y
+  , Just ls' <- CList.dropPrefix lp ls
+  , Just rs' <- CList.dropPrefix rp rs = pure (ls', rs')
+matchLHS _ _ = Nothing
 
 macroRule :: MacroRule -> Config -> Maybe (MacroRule, Config)
-macroRule r@((s0, lhs) :=> (s1, rhs, d, w)) (s, tape)
-  | s == s0, Just (ls, rs) <- matchLHS lhs tape = Just (r, (s1, move d $ plugRHS ls rhs rs))
+macroRule r@(lhs :=> (s1, rhs, d, w)) (_, tape)
+  | Just (ls, rs) <- matchLHS lhs tape = Just (r, (s1, move d $ plugRHS ls rhs rs))
 macroRule _ _ = Nothing
 
 macroStep :: MacroMachine -> Config -> Maybe (MacroRule, Config)
-macroStep m conf = foldr (<|>) Nothing [ macroRule r conf | r <- m ]
+macroStep m conf@(s, _) = foldr (<|>) Nothing [ macroRule r conf | r <- rules m s ]
 
 macroRun :: Int -> MacroMachine -> Maybe (Int, Int, Tape, MacroMachine)
 macroRun = macroRun' False
@@ -106,33 +146,40 @@ macroRun' verbose fuel m0 = goV m0 Nothing fuel 0 0 initialConfig
 
     go _ _ 0 _ _ _ = Nothing
     go m _ _ n k (H, tape) = pure (n, k, tape, m)
-    go m lastRule fuel !n !k conf =
+    go m lastRule fuel !n !k conf@(s, _) =
       case macroStep m conf of
         Nothing        -> error $ show $ text "step failed on" <+> pPrint conf
         Just (r, conf) -> goV m' (Just r') (fuel - 1) (n + ruleCost r) (k + 1) conf
           where
             (m', r')
-              | Just r0 <- lastRule
+              | Just (s0, r0) <- lastRule
               , Just r' <- combineRules r0 r =
                 -- (if verbose then trace (show $ vcat [ nest 2 $ pPrint r0
                 --                                     , "+" <+> pPrint r
                 --                                     , "=" <+> pPrint r'
                 --                                     ]) else id)
-                (r' : filter (not . subsumes r') m, r')
-              | otherwise                    = (m, r)
-            subsumes (lhs :=> _) (lhs' :=> _) = lhs == lhs'
+                (addRule s0 r' m, (s0, r'))
+              | otherwise = (m, (s, r))
 
--- Pretty printing --------------------------------------------------------
+
+------------------------------------------------------------------------
+-- Pretty printing
+------------------------------------------------------------------------
 
 instance Pretty MacroRule where
   pPrint (i :=> o) = sep [ pPrint i <+> text "=>", nest 2 $ pPrint o ]
 
--- QuickCheck properties --------------------------------------------------
+instance Pretty MacroMachine where
+  pPrint (MacroMachine m) = vcat [ (pPrint s <> ":") <+> vcat (map pPrint rs) | (s, rs) <- Map.toList m ]
+
+------------------------------------------------------------------------
+-- QuickCheck properties
+------------------------------------------------------------------------
 
 instance Arbitrary MacroRule where
   arbitrary = (:=>) <$> genLHS <*> genRHS
     where
-      genLHS = (,) <$> arbitrary <*> genPat
+      genLHS = genPat
       genRHS = (,,,) <$> arbitrary <*> genPat <*> arbitrary <*> choose (1, 10)
       genPat = Tape <$> short <*> arbitrary <*> short
       short = CList.fromList <$> do
@@ -143,11 +190,10 @@ instance Arbitrary MacroRule where
     [ lhs :=> rhs | rhs <- shrink rhs ]
 
 prop_combine :: MacroRule -> MacroRule -> Property
-prop_combine ((_, lhs₁) :=> (_, rhs₁, d₁, w₁))
-             ((_, lhs₂) :=> (_, rhs₂, d₂, w₂)) =
+prop_combine r1 r2 =
   case combineRules r1 r2 of
     Nothing -> discard
-    Just r3@((s, lhs) :=> _) ->
+    Just r3@(lhs :=> _) ->
       counterexampleD [ "r1 =" <+> pPrint r1
                       , "r2 =" <+> pPrint r2
                       , "r3 =" <+> pPrint r3
@@ -158,8 +204,6 @@ prop_combine ((_, lhs₁) :=> (_, rhs₁, d₁, w₁))
                       , "r2 ->" <+> pPrint (apply r2 =<< apply r1 conf)
                       ] $
       apply r3 conf === (apply r2 =<< apply r1 conf)
-      where conf = (s, lhs)
+      where conf = (A, lhs)
   where
-    r1 = (A, lhs₁) :=> (A, rhs₁, d₁, w₁)
-    r2 = (A, lhs₂) :=> (A, rhs₂, d₂, w₂)
     apply r conf = snd <$> macroRule r conf
