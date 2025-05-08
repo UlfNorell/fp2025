@@ -50,12 +50,6 @@ plugRHS ls0 (Tape ls x rs) rs0 = Tape (ls <> ls0) x (rs <> rs0)
 --  ---------------
 --  lp₁[lhs₁]rp₁ => ls₂[rhs₂]rs₂ d₂
 
-dropEitherPrefix :: Eq a => CList a -> CList a -> Maybe (CList a, CList a)
-dropEitherPrefix xs ys
-  | Just ys' <- CList.dropPrefix xs ys = Just (NilC, ys')
-  | Just xs' <- CList.dropPrefix ys xs = Just (xs', NilC)
-  | otherwise                    = Nothing
-
 -- Find lp and rp such that matchLHS lhs (move d lp[rhs]rp) == Just (ls, rs)
 chainMatch :: LHS -> RHS -> Dir -> Maybe ((CList Symbol, CList Symbol), (CList Symbol, CList Symbol))
 
@@ -64,15 +58,15 @@ chainMatch (Tape lp x rp) (Tape ls y rs) L = do
   pure ((lp₁, rp₁), (ls₁, rs₁))
 
 chainMatch (Tape lp x rp) (Tape ls y NilC) R
-  | Just (lp₁, ls₁) <- dropEitherPrefix lp (y :@ ls) = Just ((lp₁, rp₁), (ls₁, rs₁))
+  | Just (lp₁, ls₁) <- CList.dropEitherPrefix lp (y :@ ls) = Just ((lp₁, rp₁), (ls₁, rs₁))
   where
     rp₁ = x :@ rp
     rs₁ = NilC
 
 chainMatch (Tape lp x rp) (Tape ls y (r :@ rs)) R
   | x == r
-  , Just (lp₁, ls₁) <- dropEitherPrefix lp (y :@ ls)
-  , Just (rp₁, rs₁) <- dropEitherPrefix rp rs = Just ((lp₁, rp₁), (ls₁, rs₁))
+  , Just (lp₁, ls₁) <- CList.dropEitherPrefix lp (y :@ ls)
+  , Just (rp₁, rs₁) <- CList.dropEitherPrefix rp rs = Just ((lp₁, rp₁), (ls₁, rs₁))
 chainMatch _ _ _ = Nothing
 
 combineRules :: MacroRule -> MacroRule -> Maybe MacroRule
@@ -119,8 +113,14 @@ macroRun' verbose fuel m0 = goV m0 Nothing fuel 0 0 initialConfig
           where
             (m', r')
               | Just r0 <- lastRule
-              , Just r' <- combineRules r0 r = (r' : m, r')
+              , Just r' <- combineRules r0 r =
+                -- (if verbose then trace (show $ vcat [ nest 2 $ pPrint r0
+                --                                     , "+" <+> pPrint r
+                --                                     , "=" <+> pPrint r'
+                --                                     ]) else id)
+                (r' : filter (not . subsumes r') m, r')
               | otherwise                    = (m, r)
+            subsumes (lhs :=> _) (lhs' :=> _) = lhs == lhs'
 
 -- Pretty printing --------------------------------------------------------
 
@@ -148,7 +148,17 @@ prop_combine ((_, lhs₁) :=> (_, rhs₁, d₁, w₁))
   case combineRules r1 r2 of
     Nothing -> discard
     Just r3@((s, lhs) :=> _) ->
-      apply r3 (s, lhs) === (apply r2 =<< apply r1 (s, lhs))
+      counterexampleD [ "r1 =" <+> pPrint r1
+                      , "r2 =" <+> pPrint r2
+                      , "r3 =" <+> pPrint r3
+                      , "---"
+                      , "init:" <+> pPrint conf
+                      , "r3 ->" <+> pPrint (apply r3 conf)
+                      , "r1 ->" <+> pPrint (apply r1 conf)
+                      , "r2 ->" <+> pPrint (apply r2 =<< apply r1 conf)
+                      ] $
+      apply r3 conf === (apply r2 =<< apply r1 conf)
+      where conf = (s, lhs)
   where
     r1 = (A, lhs₁) :=> (A, rhs₁, d₁, w₁)
     r2 = (A, lhs₂) :=> (A, rhs₂, d₂, w₂)

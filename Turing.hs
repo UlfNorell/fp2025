@@ -752,7 +752,7 @@ bruteIO (ms, stats) = do
       total = sum stats
   sequence_ [ printf "%-10s %9d  (%4.1f%%)\n" (why r) n (100 * fromIntegral @_ @Double n / fromIntegral total)
             | (r, n) <- Map.toList stats ]
-  printf "%-10s %9d\n" "Total" total
+  printf "%-10s %9d\n" ("Total" :: String) total
   pure (last ms)
 
 -- bb3

@@ -51,3 +51,4 @@ executable fp2025
       PatternSynonyms
       DerivingStrategies
       MultiWayIf
+      OverloadedStrings

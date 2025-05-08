@@ -23,7 +23,7 @@ data Rep a = a :^ Int -- Power ≥ 1
   deriving (Eq, Ord, Show, Functor)
 
 newtype CList a = CList [Rep [a]] -- Nonempty list of a's
-  deriving (Eq, Ord, Show, Foldable)
+  deriving (Show, Foldable)
 
 unCList :: CList a -> [Rep [a]]
 unCList (CList xs) = xs
@@ -40,6 +40,29 @@ instance Eq a => Semigroup (CList a) where
 
 instance Eq a => Monoid (CList a) where
   mempty = CList []
+
+instance Eq a => Eq (CList a) where
+  xs == ys
+    | Just (CList [], CList []) <- dropEitherPrefix xs ys = True
+    | otherwise                                           = False
+
+instance Ord a => Ord (CList a) where
+  compare (CList xs) (CList ys) = cmp xs ys
+    where
+      cmp [] [] = EQ
+      cmp (_ : _) [] = GT
+      cmp [] (_ : _) = LT
+      cmp (xs : xss) (ys : yss)
+        | xs == ys = cmp xss yss
+      cmp (xs :^ n : xss) (ys :^ m : yss)
+        | xs == ys = if n < m then cmp xss (ys :^ (m - n) : yss)
+                              else cmp (xs :^ (n - m) : xss) yss
+        | Just xs' <- dropPrefixL ys xs = cmp (xs' :^ 1 : xs ^^ (n - 1) ++ xss) (ys ^^ (m - 1) ++ yss)
+        | Just ys' <- dropPrefixL xs ys = cmp (xs ^^ (n - 1) ++ xss) (ys' :^ 1 : ys ^^ (m - 1) ++ yss)
+        | otherwise = compare xs ys
+        where
+          xs ^^ 0 = []
+          xs ^^ n = [xs :^ n]
 
 ------------------------------------------------------------------------
 -- API
@@ -95,6 +118,12 @@ dropPrefix (CList xs) (CList ys) = go xs ys
 
 isPrefixOf :: (Pretty a, Eq a) => CList a -> CList a -> Bool
 isPrefixOf xs ys = isJust $ dropPrefix xs ys
+
+dropEitherPrefix :: Eq a => CList a -> CList a -> Maybe (CList a, CList a)
+dropEitherPrefix xs ys
+  | Just ys' <- dropPrefix xs ys = Just (NilC, ys')
+  | Just xs' <- dropPrefix ys xs = Just (xs', NilC)
+  | otherwise                    = Nothing
 
 ------------------------------------------------------------------------
 -- Internal functions
@@ -249,6 +278,16 @@ prop_clist_roundtrip xs =
     xs === fromList ys
   where
     ys = toList xs
+
+-- Eq instance ------------------------------------------------------------
+
+prop_eq :: CList Bit -> CList Bit -> Property
+prop_eq xs ys = collect (xs == ys) $ (xs == ys) === (toList xs == toList ys)
+
+-- Ord instance -----------------------------------------------------------
+
+prop_ord :: CList Bit -> CList Bit -> Property
+prop_ord xs ys = compare xs ys === compare (toList xs) (toList ys)
 
 -- Operation: cons --------------------------------------------------------
 
