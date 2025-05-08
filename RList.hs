@@ -39,6 +39,7 @@ headR (RList (RLE x _ : _)) = Just x
 
 dropR :: Int -> RList a -> RList a
 dropR 0 xs = xs
+dropR _ (RList []) = RList []
 dropR n (RList (RLE x m : xs))
   | n < m     = RList (RLE x (m - n) : xs)
   | otherwise = dropR (n - m) (RList xs)

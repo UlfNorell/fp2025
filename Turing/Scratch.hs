@@ -1,10 +1,17 @@
 
-module Turing.Scratch where
+module Turing.Scratch
+  ( module X
+  , module Turing.Scratch
+  ) where
 
-import Turing.Types
-import Turing.Tape
-import Turing.Machine
-import Turing.Machine.Macro
+import Turing.Types as X
+import Turing.Tape as X
+import Turing.Machine as X
+import Turing.Machine.Macro as X
+import Turing.Examples as X
+import Text.Pretty as X
+import Test.QuickCheck.Extra as X
+import Data.List.Compressed as X (CList(..), Rep(..), pattern NilC, pattern (:@))
 
 {-
 
@@ -21,12 +28,15 @@ Notes
 Steps
   √ Compressed list tape
   √ Basic run function
-  - Rule type rich enough to allow combined rules
-    - combine
-    - quickcheck tests
-    - also batched rules
-  - Run function with jit
+  √ Rule type rich enough to allow combined rules
+    √ combine
+    √ quickcheck tests
+    √ also batched rules
+  √ Run function with jit
   - Exploration with jit
+    - basic exploration
+    - shortcutting rules
+  - Think of ways to combine batched rules!
 -}
 
 {-

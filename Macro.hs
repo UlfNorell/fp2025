@@ -354,7 +354,7 @@ prop_combine r1 r2 =
                   print $ vcat [ text "=>{r1}" <+> ppTape tape1
                                , text "=>{r2}" <+> ppTape tape2
                                ]
-                Nothing            -> pure ()
+                _ -> pure ()
               print $ text "=>{r3}" <+> ppTape tape3
       where
         tape = mkTape lp rp

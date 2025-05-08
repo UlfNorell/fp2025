@@ -420,6 +420,7 @@ compileMacroStep k fuel m (s, d) (i@(expandMacroSymbol k -> is)) wall = batchRul
     move L ([], rs)     = ([], rs)
     move L (l : ls, rs) = (ls, l : rs)
     move R (ls, r : rs) = (r : ls, rs)
+    move _ _ = error "impossible"
 
     done wp s' o d' n = Right $ CRule (Pattern NoBatch wp [] [i] :=> RHS [] [Single o] d') (s', d') n
 
@@ -433,6 +434,7 @@ compileMacroStep k fuel m (s, d) (i@(expandMacroSymbol k -> is)) wall = batchRul
         wp' | d == L, null ls = YesWall
             | otherwise       = wp
         (s', o, d) : _ = [o | si :-> o <- m, si == (s, i)]
+    go _ _ _ _ = error "impossible"
 
 oldCompileMacroStep :: Int -> Machine -> (State, MacroSymbol, Dir, Wall) -> Either Reason (State, MacroSymbol, Dir, Int)
 oldCompileMacroStep k m (s, expandMacroSymbol k -> is, d, w) = go fuel 0 (s, tape)
@@ -446,6 +448,7 @@ oldCompileMacroStep k m (s, expandMacroSymbol k -> is, d, w) = go fuel 0 (s, tap
     move L ([], rs)     = ([], rs)
     move L (l : ls, rs) = (ls, l : rs)
     move R (ls, r : rs) = (r : ls, rs)
+    move _ _ = error "impossible"
 
     go 0 n (s, tape) = Left GiveUp
     go fuel n (H, _) = Right (H, 0, R, n)
@@ -455,6 +458,7 @@ oldCompileMacroStep k m (s, expandMacroSymbol k -> is, d, w) = go fuel 0 (s, tap
       | otherwise                        = go (fuel - 1) (n + 1) (s', move d (ls, o : rs))
       where
         (s', o, d) : _ = [o | si :-> o <- m, si == (s, i)]
+    go _ _ _ = error "impossible"
 
 -- Questions
 --  - How to pick k for a given machine?

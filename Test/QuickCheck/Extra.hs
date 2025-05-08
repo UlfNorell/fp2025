@@ -5,7 +5,7 @@ module Test.QuickCheck.Extra
 
 import Text.Pretty
 import Text.Printf
-import Test.QuickCheck
+import Test.QuickCheck hiding (Result)
 
 counterexampleP :: (Pretty a, Testable p) => a -> p -> Property
 counterexampleP = counterexample . showP

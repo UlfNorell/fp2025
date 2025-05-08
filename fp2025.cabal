@@ -41,6 +41,7 @@ executable fp2025
                  -dsuppress-coercions -ddump-simpl -dsuppress-idinfo
                  -dsuppress-type-applications -dsuppress-uniques
                  -dsuppress-module-prefixes -ddump-to-file
+                 -Wincomplete-patterns -Werror
 
     if impl(ghc >= 9.10)
       ghc-options: -Wno-x-partial
@@ -50,5 +51,6 @@ executable fp2025
       RecordWildCards
       PatternSynonyms
       DerivingStrategies
+      DerivingVia
       MultiWayIf
       OverloadedStrings

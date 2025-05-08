@@ -68,6 +68,7 @@ instance Ord a => Ord (CList a) where
 -- API
 ------------------------------------------------------------------------
 
+infixr 5 :@
 pattern NilC = CList []
 pattern (:@) :: Eq a => a -> CList a -> CList a
 pattern x :@ xs <- (uncons -> Just (x, xs))
@@ -88,6 +89,11 @@ fromList = foldr cons mempty
 
 replicate :: Int -> a -> CList a
 replicate n x = CList [[x] :^ n]
+
+concatReplicate :: Int -> CList a -> CList a
+concatReplicate 0 _ = CList []
+concatReplicate n (CList [xs :^ k]) = CList [xs :^ (n * k)]
+concatReplicate n xs = CList [toList xs :^ n]
 
 -- reverse ----------------------------------------------------------------
 
@@ -115,6 +121,7 @@ dropPrefix (CList xs) (CList ys) = go xs ys
       | n > 1 = go (xs :^ 1 : xs :^ (n - 1) : xss) yss
     go xss (ys :^ n : yss)
       | n > 1 = go xss (ys :^ 1 : ys :^ (n - 1) : yss)
+    go xss yss = error "impossible?"
 
 isPrefixOf :: (Pretty a, Eq a) => CList a -> CList a -> Bool
 isPrefixOf xs ys = isJust $ dropPrefix xs ys
@@ -124,6 +131,29 @@ dropEitherPrefix xs ys
   | Just ys' <- dropPrefix xs ys = Just (NilC, ys')
   | Just xs' <- dropPrefix ys xs = Just (xs', NilC)
   | otherwise                    = Nothing
+
+-- `dropRepeatedPrefix xs ys == (zs, n)` if
+-- - `ys == concatReplicate n xs <> zs` and
+-- - `not (isPrefixOf xs zs)`
+dropRepeatedPrefix :: Eq a => CList a -> CList a -> (CList a, Int)
+dropRepeatedPrefix (CList []) ys = (ys, 0)
+dropRepeatedPrefix xs (CList ys) = go 0 (toList xs) ys
+  where
+    divide xs ys = go 0 xs
+      where
+        go !n xs | null xs                      = pure n
+                 | Just zs <- dropPrefixL ys xs = go (n + 1) zs
+                 | otherwise                    = Nothing
+    go !n xs ([] :^ _ : yss) = go n xs yss
+    go !n xs (ys :^ k : yss)
+      | Just j <- divide xs ys
+      , (d, r) <- divMod k j
+      , d > 0 = go (n + d) xs $ [ ys :^ r | r > 0 ] ++ yss
+      | Just zs <- dropPrefixL xs ys = go (n + 1) xs (zs :^ 1 : [ ys :^ (k - 1) | k > 1 ] ++ yss)
+    go !n xs yss
+      | Just (CList zss) <- dropPrefix (CList [xs :^ 1]) (CList yss) = go (n + 1) xs zss
+    go n _ ys = (CList ys, n)
+
 
 ------------------------------------------------------------------------
 -- Internal functions
@@ -317,15 +347,27 @@ prop_isPrefixOf :: RawCList Bit -> RawCList Bit -> Property
 prop_isPrefixOf (Raw xs) (Raw ys) = check xs ys .&&. check ys xs
   where
     check xs ys =
-      counterexampleP (vcat [ "xs  =" <+> pPrint xs
-                            , "ys  =" <+> pPrint ys
-                            , "xsL =" <+> pPrint xsL
-                            , "ysL =" <+> pPrint ysL
-                            ]) $
+      counterexampleD [ "xs  =" <+> pPrint xs
+                      , "ys  =" <+> pPrint ys
+                      , "xsL =" <+> pPrint xsL
+                      , "ysL =" <+> pPrint ysL
+                      ] $
         isPrefixOf xs ys === List.isPrefixOf xsL ysL
       where
         xsL = toList xs
         ysL = toList ys
+
+prop_repeatedPrefix :: NonNegative Int -> CList Bit -> RawCList Bit -> Property
+prop_repeatedPrefix (NonNegative n) xs (Raw zs) =
+  counterexampleD [ "xs =" <+> pPrint xs
+                  , "ys =" <+> pPrint ys
+                  , "   =" <+> pShow ys
+                  , "expected:" <+> pPrint (zs, n)
+                  , "actual:  " <+> pPrint (dropRepeatedPrefix xs ys) ] $
+    not (isPrefixOf xs zs) ==>
+    (zs, n) === dropRepeatedPrefix xs ys
+  where
+    ys = concatReplicate n xs <> zs
 
 -- Operation: uncons ------------------------------------------------------
 

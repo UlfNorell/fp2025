@@ -13,6 +13,7 @@ main = do
       () <$ bruteIO (bruteExplore $ explore n lo bound)
     [n, bound]    ->
       () <$ bruteIO (bruteExplore $ explore n 0 bound)
+    _ -> putStrLn "Bad args"
     -- [n] ->
     --   print $ length $ enum n
     -- [] -> do

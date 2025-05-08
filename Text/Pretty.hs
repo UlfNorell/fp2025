@@ -16,3 +16,8 @@ showP = show . pPrint
 pShow :: Show a => a -> Doc
 pShow = text . show
 
+newtype ViaShow a = ViaShow a
+
+instance Show a => Pretty (ViaShow a) where
+  pPrintPrec _ p (ViaShow x) = text $ showsPrec (round p) x ""
+
