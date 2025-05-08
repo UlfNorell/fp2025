@@ -9,7 +9,7 @@ import Data.Maybe
 import Data.Bits
 import Data.List
 import Text.Printf
-import Text.PrettyPrint.HughesPJClass hiding ((<>))
+import Text.Pretty
 import RList
 import Tape
 import Debug.Trace

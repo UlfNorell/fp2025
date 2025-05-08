@@ -2,7 +2,7 @@
 module Turing.Machine where
 
 import Control.Applicative
-import Text.PrettyPrint.HughesPJClass
+import Text.Pretty
 
 import Turing.Types
 import Turing.Tape

@@ -16,11 +16,14 @@ Notes
   √ Symmetrical tape
     - Focused digit separately, or part of both left and right? Surely separate?
   - What is a nice pattern abstraction for compressed lists?
+  - Add infinity to the repeats?
 
 Steps
   √ Compressed list tape
   √ Basic run function
   - Rule type rich enough to allow combined rules
+    - combine
+    - quickcheck tests
     - also batched rules
   - Run function with jit
   - Exploration with jit

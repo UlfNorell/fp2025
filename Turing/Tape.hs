@@ -1,6 +1,7 @@
 module Turing.Tape where
 
-import Text.PrettyPrint.HughesPJClass hiding ((<>))
+import Text.Pretty
+import Test.QuickCheck
 
 import Data.List.Compressed qualified as CList
 import Data.List.Compressed (CList, pattern NilC, pattern (:@))
@@ -14,7 +15,7 @@ data Tape = Tape (CList Symbol) Symbol (CList Symbol)
 -- Basic operations -------------------------------------------------------
 
 initialTape :: Tape
-initialTape = Tape mempty 0 mempty
+initialTape = Tape mempty 0 (CList.replicate 1000000000000000 0)
 
 look :: Tape -> Symbol
 look (Tape _ x _) = x
@@ -32,3 +33,8 @@ move R (Tape ls x (r :@ rs)) = Tape (x :@ ls) r rs
 
 instance Pretty Tape where
   pPrint (Tape ls x rs) = hsep [pPrint (CList.reverse ls), brackets $ pPrint x, pPrint rs]
+
+-- QuickCheck properties --------------------------------------------------
+
+instance Arbitrary Tape where
+  arbitrary = Tape <$> arbitrary <*> arbitrary <*> arbitrary

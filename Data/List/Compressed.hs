@@ -3,16 +3,16 @@
 -- | Compressed lists.
 module Data.List.Compressed where
 
-import Prelude hiding (take, drop, reverse)
+import Prelude hiding (reverse)
 import Control.Applicative
 import Control.Monad
 import Data.Foldable
 import Data.Either
-import Data.List hiding (take, drop, reverse, isPrefixOf, isSuffixOf, uncons)
+import Data.List hiding (uncons, reverse, isPrefixOf)
 import Data.List qualified as List
 import Data.Maybe
-import Test.QuickCheck
-import Text.PrettyPrint.HughesPJClass hiding ((<>))
+import Test.QuickCheck.Extra
+import Text.Pretty
 import Text.Printf
 
 ------------------------------------------------------------------------
@@ -33,7 +33,7 @@ unCList (CList xs) = xs
 ------------------------------------------------------------------------
 
 instance Foldable Rep where
-  foldMap f (x :^ n) = fold (replicate n $ f x)
+  foldMap f (x :^ n) = fold (Prelude.replicate n $ f x)
 
 instance Eq a => Semigroup (CList a) where
   CList xs <> ys = foldr consRep ys xs
@@ -51,10 +51,20 @@ pattern x :@ xs <- (uncons -> Just (x, xs))
   where x :@ xs = cons x xs
 {-# COMPLETE NilC, (:@) #-}
 
+-- length -----------------------------------------------------------------
+
+length :: CList a -> Int
+length (CList rs) = sum [ Prelude.length xs * n | xs :^ n <- rs ]
+
 -- fromList ---------------------------------------------------------------
 
 fromList :: Eq a => [a] -> CList a
 fromList = foldr cons mempty
+
+-- replicate --------------------------------------------------------------
+
+replicate :: Int -> a -> CList a
+replicate n x = CList [[x] :^ n]
 
 -- reverse ----------------------------------------------------------------
 
@@ -167,22 +177,12 @@ dropSuffix xs ys = List.reverse <$> dropPrefixL (List.reverse xs) (List.reverse 
 -- Pretty printing
 ------------------------------------------------------------------------
 
-parensIf :: Bool -> Doc -> Doc
-parensIf True  = parens
-parensIf False = id
-
-showP :: Pretty a => a -> String
-showP = show . pPrint
-
-pShow :: Show a => a -> Doc
-pShow = text . show
-
 newtype Seq a = Seq [a]
 
 instance Pretty a => Pretty (Seq a) where
   pPrintPrec l p (Seq [])  = "EMPTY"
   pPrintPrec l p (Seq [x]) = pPrintPrec l p x
-  pPrintPrec l p (Seq xs)  = parensIf (p > 0) $ hcat $ map (pPrintPrec l 1) xs
+  pPrintPrec l p (Seq xs)  = parensIf (p > 1) $ hcat $ map (pPrintPrec l 1) xs
 
 instance Pretty a => Pretty (CList a) where
   pPrintPrec _ _ (CList [])         = "ε"
@@ -194,7 +194,9 @@ instance Pretty a => Pretty (Rep a) where
     | n == 1    = pPrintPrec l p x
     | otherwise = parensIf (p > 1) $ pPrintPrec l 2 x <> pow n
     where
-      pow = text . map ((ds !!) . subtract (fromEnum '0') . fromEnum) . show
+      pow n
+        | n >= 1_000_000_000_000 = "ʷ"
+        | otherwise = text . map ((ds !!) . subtract (fromEnum '0') . fromEnum) $ show n
       ds  = "⁰¹²³⁴⁵⁶⁷⁸⁹"
 
 instance Pretty Doc where
@@ -203,17 +205,6 @@ instance Pretty Doc where
 ------------------------------------------------------------------------
 -- QuickCheck tests
 ------------------------------------------------------------------------
-
-counterexampleP :: (Pretty a, Testable p) => a -> p -> Property
-counterexampleP = counterexample . showP
-
--- Random list of positive integers summing to a given value.
-genSum :: Int -> Gen [Int]
-genSum n | n < 1 = error $ printf "genSum: %d < 1" n
-genSum n = shuffle =<< go n
-  where
-    go 0 = pure []
-    go n = choose (1, n) >>= \ k -> (k :) <$> go (n - k)
 
 -- Arbitrary instances ----------------------------------------------------
 

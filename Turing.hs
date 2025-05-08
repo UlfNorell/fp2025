@@ -18,7 +18,7 @@ import Data.Word
 import Data.Char
 import Data.Monoid
 import Text.Printf
-import Text.PrettyPrint.HughesPJClass hiding ((<>), first)
+import Text.Pretty
 import Test.QuickCheck
 
 import RList
