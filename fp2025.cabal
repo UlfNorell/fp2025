@@ -19,6 +19,7 @@ executable fp2025
                       Macro
                       Turing
                       -- New stuff
+                      Data.ReachGraph
                       Data.List.Compressed
                       Data.List.Compressed.Pattern
                       Test.QuickCheck.Extra

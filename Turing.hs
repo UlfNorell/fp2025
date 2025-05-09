@@ -21,6 +21,7 @@ import Text.Printf
 import Text.Pretty
 import Test.QuickCheck
 
+import Data.ReachGraph
 import RList
 import Tape
 import Macro
@@ -93,19 +94,6 @@ vrun n m = vizrun 200 n m 0 initConf >>= print . fst
 
 score :: Machine -> Int
 score rs = fst (run rs 0 initConf)
-
--- Reachability graphs ----------------------------------------------------
-
-type ReachGraph a = Map a (Set a)
-
-addReachEdge :: Ord a => a -> a -> ReachGraph a -> ReachGraph a
-addReachEdge x y g = addYs <$> (Map.insertWith (<>) x (Set.singleton y) g)
-  where
-    ys = Set.insert y $ fromMaybe mempty (Map.lookup y g)
-    addYs zs
-      | Set.member x zs = ys <> zs
-      | Set.member y zs = ys <> zs
-      | otherwise       = zs
 
 -- Smarter running --------------------------------------------------------
 
