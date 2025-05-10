@@ -3,15 +3,17 @@ module Turing.Machine.Macro where
 
 import Control.Applicative
 import Control.Monad
+import Control.Concurrent
 import Data.List (nub, sort)
 import Data.List.Compressed qualified as CList
 import Data.List.Compressed (CList, pattern NilC, pattern (:@))
 import Data.Map (Map)
-import Data.Map qualified as Map
+import Data.Map.Strict qualified as Map
 import Data.Set (Set)
 import Data.Set qualified as Set
 import Data.Maybe
 import Data.ReachGraph
+import System.Timeout.Unsafe
 import Text.Pretty
 import Text.Printf
 import Test.QuickCheck.Extra
@@ -29,6 +31,7 @@ import Turing.Machine
 type LHS = Tape
 type RHS = Tape
 data MacroClause = LHS :=> (RHS, Dir)
+                 | WallBounce Symbol (CList Symbol) Symbol (CList Symbol)
                  | BatchL (CList Symbol) LHS RHS (CList Symbol)
                  | BatchR LHS (CList Symbol) (CList Symbol) RHS
   deriving (Eq, Ord, Show)
@@ -46,6 +49,9 @@ addRule s r (MacroMachine m) = MacroMachine $ Map.insertWith ins s [r] m
     ins rs1 rs2 = rs1 ++ filter (not . subsumed) rs2
       where subsumed r = any (`subsumes` r) rs1
     subsumes (Rule (lhs :=> _) _ _) (Rule (lhs' :=> _) _ _) = lhs == lhs'
+    subsumes (Rule (BatchR lhs rp _ _) _ _) (Rule (BatchR lhs' rp' _ _) _ _) = (lhs, rp) == (lhs', rp')
+    subsumes (Rule (BatchL lp lhs _ _) _ _) (Rule (BatchL lp' lhs' _ _) _ _) = (lp, lhs) == (lp', lhs')
+    subsumes (Rule (WallBounce i rp _ _) _ _) (Rule (WallBounce i' rp' _ _) _ _) = (i, rp) == (i', rp')
     subsumes _ _ = False
 
 ruleCost :: MacroRule -> Int
@@ -120,8 +126,13 @@ combineClauses (lhs₁ :=> (rhs₁, d₁))
   | Just ((lp₁, rp₁), (ls₂, rs₂)) <- chainMatch lhs₂ rhs₁ d₁ = do
     let lhs@(Tape lp _ rp) = plugLHS lp₁ lhs₁ rp₁
         rhs = plugRHS ls₂ rhs₂ rs₂
-    guard $ CList.length lp + CList.length rp < 10
+    guard $ CList.length lp + CList.length rp < 11
     pure $ lhs :=> (rhs, d₂)
+combineClauses (WallBounce i₁ rp₁ o₁ rs₁)
+               (WallBounce i₂ rp₂ o₂ rs₂)
+  | o₁ == i₂
+  , Just (rp, rs) <- CList.dropEitherPrefix rp₂ rs₁ =
+    pure $ WallBounce i₁ (rp₁ <> rp) o₂ (rs₂ <> rs)
 combineClauses _ _ = Nothing
 
 -- Batching ---------------------------------------------------------------
@@ -148,6 +159,14 @@ batchRule s rule@(Rule (lhs :=> (rhs, L)) s' w)
   , not $ null lp = [Rule (BatchL lp lhs rhs rs) s w, rule]
 batchRule _ rule = [rule]
 
+-- Wall bounces -----------------------------------------------------------
+
+wallBounceRule :: MacroRule -> [MacroRule]
+wallBounceRule rule = case rule of
+  Rule (Tape NilC i rp :=> (Tape NilC o rs, L)) s w ->
+    [Rule (WallBounce i rp o rs) s w]
+  _ -> []
+
 ------------------------------------------------------------------------
 -- Running
 ------------------------------------------------------------------------
@@ -167,6 +186,12 @@ macroRule r (_, tape) = do
     match (Rule (lhs :=> (rhs, d)) s1 w) tape = do
       (ls, rs) <- matchLHS lhs tape
       pure (w, (s1, move d $ plugRHS ls rhs rs))
+
+    match (Rule (WallBounce x rp y rs) s1 w) (Tape l z r) = do
+      guard $ (NilC, x) == (l, z)
+      r₁ <- CList.dropPrefix rp r
+      pure (w, (s1, Tape NilC y (rs <> r₁)))
+
     match rule@(Rule (BatchR (Tape lp x rp) rp₂ ls₂ (Tape ls y rs)) s1 w) tape@(Tape l z r) = do
       guard $ x == z
       l₁ <- CList.dropPrefix lp l
@@ -175,6 +200,7 @@ macroRule r (_, tape) = do
       guard $ n > 3
       let result = move R $ Tape (ls <> CList.concatReplicate n ls₂ <> l₁) y (rs <> r₂)
       pure ((n + 1) * w, (s1, result))
+
     match rule@(Rule (BatchL lp₂ (Tape lp x rp) (Tape ls y rs) rs₂) s1 w) tape@(Tape l z r) = do
       guard $ x == z
       l₁ <- CList.dropPrefix lp l
@@ -213,18 +239,20 @@ combineStep :: LastRules
             -> MacroMachine
             -> Config
             -> Maybe (Int, LastRules, MacroMachine, Config)
-combineStep lastRules m conf@(s, _) =
+combineStep lastRules m conf@(s, Tape l _ _) =
   case macroStep m conf of
-    Nothing           -> Nothing
-    Just (w, r, conf) -> Just (w, lastRules', m', conf)
+    Nothing            -> Nothing
+    Just (w, r, conf') -> Just (w, lastRules', m', conf')
       where
         newRules = do
           (s0, r0) <- lastRules
-          Just r'  <- pure $ combineRules r0 r
-          pure (s0, r')
+          let wrs | l == NilC = wallBounceRule r
+                  | otherwise = []
+          [ (s0, r') | r' <- catMaybes $ combineRules r0 r : [ combineRules r0 wr | wr <- wrs ] ]
+            ++ [ (s, wr) | wr <- wrs ]
         m' = foldr addNew m newRules
         lastRules' = (s, r) : newRules
-        addNew (s0, r') m = foldr (addRule s0) m (batchRule s0 r')
+        addNew (s0, r') m = foldr (addRule s0) m (batchRule s0 r' ++ wallBounceRule r')
 
 macroRun' :: Bool -> Int -> MacroMachine -> (Result, MacroMachine)
 macroRun' verbose fuel m0 = goV m0 [] fuel 0 0 initialConfig
@@ -240,7 +268,6 @@ macroRun' verbose fuel m0 = goV m0 [] fuel 0 0 initialConfig
       case combineStep lastRule m conf of
         Nothing                     -> error $ show $ "step failed on" <+> pPrint conf
         Just (w, lastRule, m, conf) -> goV m lastRule (fuel - w) (n + w) (k + 1) conf
-
 
 ------------------------------------------------------------------------
 -- Exploration
@@ -400,35 +427,59 @@ runExplore n fuel = go fuel 0 0 initG emptyL initLs [] mempty initialConfig
     LoopDetector{..} = loopDetector
     go fuel n k _ _ _ _ m _ | fuel <= 0 = pure (NoTermination OutOfFuel k, m)
     go fuel n k _ _ _ _ m (H, _) = pure (Terminated n k, m)
-    go fuel !n k g l ls lastRule m conf@(s, tape) =
-      case combineStep lastRule m conf of
+    go fuel !n k g l ls lastRules m conf@(s, tape) =
+      case combineStep lastRules m conf of
         Nothing -> do
           -- Make up new rule
           (sod, g') <- genTransitions g n conf
           let rule = (s, look tape) :-> sod
               rs   = batchRule s $ basicRule rule
               l'   = stepL l rule
-          go fuel n k g' l' ls lastRule (foldr (addRule s) m rs) conf
-        Just (w, lastRule, m, conf') ->
+          go fuel n k g' l' ls lastRules (foldr (addRule s) m rs) conf
+        Just (w, lastRules, m, conf') ->
           case stepLoop l ls n conf conf' of
             Left err  -> pure (NoTermination err k, m)
-            Right ls' -> go (fuel - w) (n + w) (k + 1) g l ls' lastRule m conf'
+            Right ls' -> go (fuel - w) (n + w) (k + 1) g l ls' lastRules m conf'
 
-exploreIO :: Int -> Int -> IO (Result, MacroMachine)
-exploreIO n fuel = go 0 0 (Terminated 0 0, mempty) $ runExplore n fuel
+data Stats = Stats { statResults :: !(Map String Int)
+                   , totalSteps  :: !Int
+                   }
+
+noStats :: Stats
+noStats = Stats mempty 0
+
+addResult :: String -> Stats -> Stats
+addResult r (Stats m n) = Stats (Map.insertWith (+) r 1 m) n
+
+addSteps :: Int -> Stats -> Stats
+addSteps k (Stats m n) = Stats m (n + k)
+
+printStats :: Stats -> IO ()
+printStats Stats{..} = do
+  let total = sum statResults
+      frac n = fromIntegral @_ @Double n / fromIntegral total
+  sequence_ [ printf "%-10s %9d  (%4.1f%%)\n" r n (100 * frac n)
+            | (r, n) <- Map.toList statResults ]
+  printf "%-10s %9d\n" ("Total" :: String) total
+  printf "Average steps: %.1f\n" (frac totalSteps)
+
+exploreIO :: Int -> Int -> IO ((Result, MacroMachine), Stats)
+exploreIO n fuel = go noStats 0 0 (Terminated 0 0, mempty) $ runExplore n fuel
   where
-    go best worst mbest [] = pure mbest
-    go best worst mbest ((r@(Terminated n k), m') : rs) = do
+    go stats best worst mbest [] = pure (mbest, stats)
+    go !stats best worst mbest ((r@(Terminated n k), m') : rs) = do
       let (best', mbest') | n > best  = (n, (r, m'))
                           | otherwise = (best, mbest)
-      when (best' > best) $ printf "GOOD %3d %-9d: %s\n" k n (show $ toPrim m')
+      when (best' > best) $ printf "GOOD %4d %-9d: %s\n" k n (show $ toPrim m')
       let worst' = max k worst
-      when (worst' > worst) $ printf "BAD  %3d %-9s: %s\n" k ("Halt" :: String) (show $ toPrim m')
-      go best' worst' mbest' rs
-    go best worst mbest ((r@(NoTermination err k), m') : rs) = do
+      when (worst' > worst) $ printf "BAD  %4d %-9s: %s\n" k ("Halt" :: String) (show $ toPrim m')
+      let stats' = addSteps k $ addResult "Terminated" stats
+      go stats' best' worst' mbest' rs
+    go !stats best worst mbest ((r@(NoTermination err k), m') : rs) = do
       let worst' = max k worst
-      when (worst' > worst) $ printf "BAD  %3d %-9s: %s\n" k (show err) (show $ toPrim m')
-      go best worst' mbest rs
+      when (worst' > worst) $ printf "BAD  %4d %-9s: %s\n" k (show err) (show $ toPrim m')
+      let stats' = addSteps k $ addResult (show err) stats
+      go stats' best worst' mbest rs
 
 ------------------------------------------------------------------------
 -- Pretty printing
@@ -436,6 +487,7 @@ exploreIO n fuel = go 0 0 (Terminated 0 0, mempty) $ runExplore n fuel
 
 instance Pretty MacroClause where
   pPrint (i :=> o) = hsep [ pPrint i, "=>", pPrint o ]
+  pPrint (WallBounce i rp o rs) = hsep [ "|", pPrint i, pPrint rp, "=> |", pPrint o, pPrint rs ]
   pPrint (BatchR i rp ls o) = hsep [ pPrint i, pPrintPrec prettyNormal 2 rp <> "ⁿ", "=>"
                                    , pPrintPrec prettyNormal 2 (CList.reverse ls) <> "ⁿ", pPrint o ]
   pPrint (BatchL lp i o rs) = hsep [ pPrintPrec prettyNormal 2 (CList.reverse lp) <> "ⁿ", pPrint i, "=>"
@@ -461,6 +513,8 @@ instance Arbitrary MacroClause where
         n <- choose (0, 3)
         vectorOf n arbitrary
   shrink (lhs :=> rhs) = [ lhs :=> rhs | (lhs, rhs) <- shrink (lhs, rhs) ]
+  shrink (WallBounce x rp y rs) =
+    [ WallBounce x rp y rs | (x, rp, y, rs) <- shrink (x, rp, y, rs) ]
   shrink (BatchR lhs rp ls rhs) =
     [ lhs :=> (rhs, R)
     , lhs :=> (rhs, L) ] ++
@@ -481,6 +535,7 @@ prop_combine r1 r2 =
     Nothing -> discard
     Just (Rule BatchR{} _ _) -> error "impossible"
     Just (Rule BatchL{} _ _) -> error "impossible"
+    Just (Rule WallBounce{} _ _) -> counterexample "TODO: WallBounce" False
     Just r3@(Rule (lhs :=> _) _ _) ->
       counterexampleD [ "r1 =" <+> pPrint r1
                       , "r2 =" <+> pPrint r2

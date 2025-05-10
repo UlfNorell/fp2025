@@ -182,9 +182,9 @@ consRep x (CList xs) = CList $ squash $ go x xs
     go (_ :^ 0) zs = zs
     go ([] :^ _) zs = zs
     go (xs :^ n) (ys :^ m : zs)
-      | xs == ys                = go (ys :^ (n + m)) zs
-    go (xs :^ n) (ys :^ m : zs)
-      | Just xs' <- dropSuffix ys xs = go (xs :^ (n - 1)) $ go (xs' :^ 1) $ go (ys :^ (m + 1)) zs
+      | xs == ys = go (ys :^ (n + m)) zs
+    -- go (xs :^ n) (ys :^ m : zs)
+    --   | Just xs' <- dropSuffix ys xs = go (xs :^ (n - 1)) $ go (xs' :^ 1) $ go (ys :^ (m + 1)) zs
     go (xs :^ n) (ys :^ 1 : zs)
       | Just ys' <- dropPrefixL xs ys = go (xs :^ (n + 1)) $ go (ys' :^ 1) zs
     go (xs :^ 1) ((y : ys) :^ 1 : zs) = go ((xs ++ [y]) :^ 1) $ go (ys :^ 1) zs

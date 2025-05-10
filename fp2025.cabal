@@ -21,9 +21,9 @@ executable fp2025
                       -- New stuff
                       Data.ReachGraph
                       Data.List.Compressed
-                      Data.List.Compressed.Pattern
                       Test.QuickCheck.Extra
                       Text.Pretty
+                      System.Timeout.Unsafe
                       Turing.Scratch
                       Turing.Types
                       Turing.Tape
