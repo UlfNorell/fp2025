@@ -14,6 +14,9 @@ data Tape = Tape (CList Symbol) Symbol (CList Symbol)
 
 -- Basic operations -------------------------------------------------------
 
+mkTape :: [Symbol] -> Symbol -> [Symbol] -> Tape
+mkTape l x r = Tape (CList.fromList l) x (CList.fromList r)
+
 initialTape :: Tape
 initialTape = Tape mempty 0 (CList.replicate 1000000000000000 0)
 

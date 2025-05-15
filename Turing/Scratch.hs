@@ -70,6 +70,12 @@ conf = (A,Tape (CList [[0] :^ 2,[1,0] :^ 1]) 0 (CList [[0] :^ 999999999999996]))
 xs = CList [[0, 0, 1, 0] :^ 1_000_000_000_000]
 ys = CList.fromList [0, 0, 1, 0]
 
+mkR :: Wall -> Tape -> Tape -> Dir -> MacroRule
+mkR w lhs rhs d = Rule (Clause w lhs rhs d) A 1
+
+r1 = mkR YesWall (mkTape [1] 1 [0]) (mkTape [] 0 [1, 1, 1]) L
+r2 = mkR YesWall (mkTape [] 0 [1])  (mkTape [0, 0, 0] 0 [1, 0]) L
+
 -- Benchmarking -----------------------------------------------------------
 
 -- bb3 10,000
@@ -143,3 +149,37 @@ badBB3₃ = [ (A, 1) :-> (B, 1, L)
 --  Average steps: 22.7
 --  Max steps:     1184
 --  Time:          1.5s
+
+-- Merge wall bounce and :=>
+--  Loop            2918  (21.9%)
+--  OutOfFuel       3437  (25.7%)
+--  StuckLeft       1250  ( 9.4%)
+--  Terminated      5748  (43.0%)
+--  Total          13353
+--  Average steps: 22.0
+--  Max steps:     1181
+--  Time:          2.8s
+
+badBB3₄ :: Machine
+badBB3₄ = [ (A, 1) :-> (B, 0, R)
+          , (A, 0) :-> (A, 1, L)
+          , (B, 1) :-> (B, 0, R)
+          , (B, 0) :-> (C, 1, L)
+          , (C, 0) :-> (A, 0, L) ]
+
+-- Better combineRules
+--  Loop            2941  (22.0%)
+--  OutOfFuel       3414  (25.6%)
+--  StuckLeft       1250  ( 9.4%)
+--  Terminated      5748  (43.0%)
+--  Total          13353
+--  Average steps: 17.9
+--  Max steps:     2012
+--  Time:          1.3s
+
+badBB3₅ :: Machine
+badBB3₅ = [ (A, 1) :-> (A, 1, R)
+          , (A, 0) :-> (B, 0, R)
+          , (B, 1) :-> (C, 1, L)
+          , (B, 0) :-> (B, 1, L)
+          , (C, 1) :-> (A, 1, L) ]
