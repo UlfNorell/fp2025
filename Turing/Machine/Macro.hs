@@ -73,7 +73,9 @@ basicRule ((_, i) :-> (s', o, d)) =
 
 fromPrimRule :: Rule -> MacroMachine
 fromPrimRule r@((s, _) :-> (s', o, d)) =
-  MacroMachine $ Map.singleton s [basicRule r]
+  MacroMachine $ Map.singleton s $ wallBounceRule mr ++ [mr]
+  where
+    mr = basicRule r
 
 fromPrim :: Machine -> MacroMachine
 fromPrim = foldMap fromPrimRule
@@ -116,9 +118,14 @@ chainMatch (Tape lp x rp) (Tape ls y (r :@ rs)) R
 chainMatch _ _ _ = Nothing
 
 combineRules :: MacroRule -> MacroRule -> Maybe MacroRule
-combineRules (Rule c₁ _ w₁) (Rule c₂ s₂ w₂) = do
+combineRules r₁@(Rule c₁ _ w₁) r₂@(Rule c₂ s₂ w₂) = do
   c <- combineClauses c₁ c₂
-  pure $ Rule c s₂ (w₁ + w₂)
+  let r = Rule c s₂ (w₁ + w₂)
+  trace (show $ nest 2 $ vcat
+                [ "+" <+> pPrint r₁
+                , "+" <+> pPrint r₂
+                , "=" <+> pPrint r ]) $
+    pure r
 
 combineClauses :: MacroClause -> MacroClause -> Maybe MacroClause
 combineClauses (lhs₁ :=> (rhs₁, d₁))
@@ -165,6 +172,8 @@ wallBounceRule :: MacroRule -> [MacroRule]
 wallBounceRule rule = case rule of
   Rule (Tape NilC i rp :=> (Tape NilC o rs, L)) s w ->
     [Rule (WallBounce i rp o rs) s w]
+  Rule (Tape NilC i rp :=> (Tape (o :@ NilC) o' rs, L)) s w ->
+    [Rule (WallBounce i rp o (o' :@ rs)) s w]
   _ -> []
 
 ------------------------------------------------------------------------
@@ -242,32 +251,38 @@ combineStep :: LastRules
 combineStep lastRules m conf@(s, Tape l _ _) =
   case macroStep m conf of
     Nothing            -> Nothing
-    Just (w, r, conf') -> Just (w, lastRules', m', conf')
+    Just (w, r, conf') ->
+      trace (show $ nest 2 $ vcat [ "U" <+> pPrint r
+                                  , "L" <+> vcat (map pPrint lastRules)
+                                  ]) $
+        Just (w, lastRules', m', conf')
       where
         newRules = do
           (s0, r0) <- lastRules
-          let wrs | l == NilC = wallBounceRule r
+          let wrs | isWall    = wallBounceRule r
                   | otherwise = []
           [ (s0, r') | r' <- catMaybes $ combineRules r0 r : [ combineRules r0 wr | wr <- wrs ] ]
             ++ [ (s, wr) | wr <- wrs ]
         m' = foldr addNew m newRules
         lastRules' = (s, r) : newRules
         addNew (s0, r') m = foldr (addRule s0) m (batchRule s0 r' ++ wallBounceRule r')
+  where
+    isWall = l == NilC
 
 macroRun' :: Bool -> Int -> MacroMachine -> (Result, MacroMachine)
 macroRun' verbose fuel m0 = goV m0 [] fuel 0 0 initialConfig
   where
-    goV m lastRule fuel n k conf@(s, tape) = dbg $ go m lastRule fuel n k conf
+    goV m lastRules fuel n k conf@(s, tape) = dbg $ go m lastRules fuel n k conf
       where
         dbg | verbose   = trace $ printf "%7d %3d | %s: %s" n k (show s) (show $ pPrint tape)
             | otherwise = id
 
     go m _ fuel _ k _ | fuel <= 0 = (NoTermination OutOfFuel k, m)
     go m _ _ n k (H, _) = (Terminated n k, m)
-    go m lastRule fuel !n !k conf@(s, _) =
-      case combineStep lastRule m conf of
-        Nothing                     -> error $ show $ "step failed on" <+> pPrint conf
-        Just (w, lastRule, m, conf) -> goV m lastRule (fuel - w) (n + w) (k + 1) conf
+    go m lastRules fuel !n !k conf@(s, _) =
+      case combineStep lastRules m conf of
+        Nothing                      -> error $ show $ "step failed on" <+> pPrint conf
+        Just (w, lastRules, m, conf) -> goV m lastRules (fuel - w) (n + w) (k + 1) conf
 
 ------------------------------------------------------------------------
 -- Exploration
@@ -487,7 +502,7 @@ exploreIO n fuel = go noStats 0 0 (Terminated 0 0, mempty) $ runExplore n fuel
 
 instance Pretty MacroClause where
   pPrint (i :=> o) = hsep [ pPrint i, "=>", pPrint o ]
-  pPrint (WallBounce i rp o rs) = hsep [ "|", pPrint i, pPrint rp, "=> |", pPrint o, pPrint rs ]
+  pPrint (WallBounce i rp o rs) = hsep [ "|", brackets $ pPrint i, pPrint rp, "=> |", brackets $ pPrint o, pPrint rs ]
   pPrint (BatchR i rp ls o) = hsep [ pPrint i, pPrintPrec prettyNormal 2 rp <> "ⁿ", "=>"
                                    , pPrintPrec prettyNormal 2 (CList.reverse ls) <> "ⁿ", pPrint o ]
   pPrint (BatchL lp i o rs) = hsep [ pPrintPrec prettyNormal 2 (CList.reverse lp) <> "ⁿ", pPrint i, "=>"

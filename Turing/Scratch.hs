@@ -87,25 +87,50 @@ ys = CList.fromList [0, 0, 1, 0]
 -- Strip duplicate batched rules
 --  Time:            2.5s
 
-badBB3 :: Machine
-badBB3 = [ (A, 0) :-> (B, 1, L)
-         , (A, 1) :-> (A, 0, R)
-         , (B, 0) :-> (C, 0, L)
-         , (B, 1) :-> (A, 1, L)
-         , (C, 0) :-> (A, 0, L) ]
+badBB3₁ :: Machine
+badBB3₁ = [ (A, 0) :-> (B, 1, L)
+          , (A, 1) :-> (A, 0, R)
+          , (B, 0) :-> (C, 0, L)
+          , (B, 1) :-> (A, 1, L)
+          , (C, 0) :-> (A, 0, L) ]
 
- -- A: ε [1] 1⁸0 => (ε  [1] (001)³,   L), B (cost 19)
- --    ε [1] 1⁷0 => (ε  [0] 01(001)², L), A (cost 17)
- --    ε [1] 1⁶0 => (ε  [0] 1(001)²,  L), C (cost 15)
- --    ε [1] 1⁵0 => (ε  [1] (001)²,   L), B (cost 13)
- --    ε [1] 1⁴0 => (ε  [0] 010²1,    L), A (cost 11)
- --    ε [1] 1³0 => (ε  [0] 10²1,     L), C (cost 9)
- --    ε [1] 1²0 => (ε  [1] 0²1,      L), B (cost 7)
- --    ε [1] 10  => (ε  [0] 01,       L), A (cost 5)
- --    ε [1] 1ⁿ  => (0ⁿ [0] ε,        R), A (cost 2)
- --    ε [1] 0   => (ε  [0] 1,        L), C (cost 3)
- --    ε [1] ε   => (ε  [0] ε,        R), A (cost 1)
- --    ε [0] ε   => (ε  [1] ε,        L), B (cost 1)
- -- B: ε [0] ε   => (ε  [0] ε,        L), C (cost 1)
- --    ε [1] ε   => (ε  [1] ε,        L), A (cost 1)
- -- C: ε [0] ε   => (ε  [0] ε,        L), A (cost 1))
+-- Wall bouncing
+--  Time:            0.6s
+--  Average steps:  31.4
+--  Max steps:      4009
+
+badBB3₂ :: Machine
+badBB3₂ = [ (A, 0) :-> (B, 1, L)
+          , (A, 1) :-> (A, 0, R)
+          , (B, 0) :-> (C, 0, L)
+          , (B, 1) :-> (B, 0, R)
+          , (C, 0) :-> (A, 1, L)
+          ]
+
+-- Better wall bouncing
+--  Loop            2927  (21.9%)
+--  OutOfFuel       3428  (25.7%)
+--  StuckLeft       1250  ( 9.4%)
+--  Terminated      5748  (43.0%)
+--  Total          13353
+--  Average steps: 24.7
+--  Time:           0.4s
+--  Max steps:     1225
+
+-- BB4 10,000
+-- Loop          528975  (25.5%)
+-- OutOfFuel     611251  (29.5%)
+-- StuckLeft     142953  ( 6.9%)
+-- Terminated    787694  (38.0%)
+-- Total        2070873
+-- Average steps: 37.5
+-- Max steps:     2229
+-- Time:         61m42s
+
+badBB3₃ :: Machine
+badBB3₃ = [ (A, 1) :-> (B, 1, L)
+          , (A, 0) :-> (A, 1, L)
+          , (B, 0) :-> (C, 1, L)
+          , (B, 1) :-> (B, 0, R)
+          , (C, 0) :-> (A, 0, L) ]
+
