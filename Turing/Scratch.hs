@@ -134,3 +134,12 @@ badBB3₃ = [ (A, 1) :-> (B, 1, L)
           , (B, 1) :-> (B, 0, R)
           , (C, 0) :-> (A, 0, L) ]
 
+-- Generalized wall bounce
+--  Loop            2921  (21.9%)
+--  OutOfFuel       3434  (25.7%)
+--  StuckLeft       1250  ( 9.4%)
+--  Terminated      5748  (43.0%)
+--  Total          13353
+--  Average steps: 22.7
+--  Max steps:     1184
+--  Time:          1.5s

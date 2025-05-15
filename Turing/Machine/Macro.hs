@@ -31,7 +31,7 @@ import Turing.Machine
 type LHS = Tape
 type RHS = Tape
 data MacroClause = LHS :=> (RHS, Dir)
-                 | WallBounce Symbol (CList Symbol) Symbol (CList Symbol)
+                 | WallBounce Symbol (CList Symbol) Tape Dir
                  | BatchL (CList Symbol) LHS RHS (CList Symbol)
                  | BatchR LHS (CList Symbol) (CList Symbol) RHS
   deriving (Eq, Ord, Show)
@@ -121,11 +121,11 @@ combineRules :: MacroRule -> MacroRule -> Maybe MacroRule
 combineRules r₁@(Rule c₁ _ w₁) r₂@(Rule c₂ s₂ w₂) = do
   c <- combineClauses c₁ c₂
   let r = Rule c s₂ (w₁ + w₂)
-  trace (show $ nest 2 $ vcat
-                [ "+" <+> pPrint r₁
-                , "+" <+> pPrint r₂
-                , "=" <+> pPrint r ]) $
-    pure r
+  -- trace (show $ nest 2 $ vcat
+  --               [ "+" <+> pPrint r₁
+  --               , "+" <+> pPrint r₂
+  --               , "=" <+> pPrint r ]) $
+  pure r
 
 combineClauses :: MacroClause -> MacroClause -> Maybe MacroClause
 combineClauses (lhs₁ :=> (rhs₁, d₁))
@@ -135,11 +135,17 @@ combineClauses (lhs₁ :=> (rhs₁, d₁))
         rhs = plugRHS ls₂ rhs₂ rs₂
     guard $ CList.length lp + CList.length rp < 11
     pure $ lhs :=> (rhs, d₂)
-combineClauses (WallBounce i₁ rp₁ o₁ rs₁)
-               (WallBounce i₂ rp₂ o₂ rs₂)
+combineClauses (WallBounce i₁ rp₁ (Tape NilC o₁ rs₁) L)
+               (WallBounce i₂ rp₂ (Tape ls₂ o₂ rs₂) d₂)
   | o₁ == i₂
   , Just (rp, rs) <- CList.dropEitherPrefix rp₂ rs₁ =
-    pure $ WallBounce i₁ (rp₁ <> rp) o₂ (rs₂ <> rs)
+    pure $ WallBounce i₁ (rp₁ <> rp) (Tape ls₂ o₂ (rs₂ <> rs)) d₂
+combineClauses rule₁@(WallBounce _ _ _ R) rule₂
+  | Just c <- combineClauses (unWallBounce rule₁) rule₂
+  , [bc] <- wallBounceClause c = pure bc
+combineClauses rule₁@(WallBounce _ _ (Tape (_ :@ _) _ _) L) rule₂
+  | Just c <- combineClauses (unWallBounce rule₁) rule₂
+  , [bc] <- wallBounceClause c = pure bc
 combineClauses _ _ = Nothing
 
 -- Batching ---------------------------------------------------------------
@@ -168,13 +174,20 @@ batchRule _ rule = [rule]
 
 -- Wall bounces -----------------------------------------------------------
 
-wallBounceRule :: MacroRule -> [MacroRule]
-wallBounceRule rule = case rule of
-  Rule (Tape NilC i rp :=> (Tape NilC o rs, L)) s w ->
-    [Rule (WallBounce i rp o rs) s w]
-  Rule (Tape NilC i rp :=> (Tape (o :@ NilC) o' rs, L)) s w ->
-    [Rule (WallBounce i rp o (o' :@ rs)) s w]
+wallBounceClause :: MacroClause -> [MacroClause]
+wallBounceClause = \ case
+  Tape NilC i rp :=> (Tape (o :@ NilC) o' rs, L) ->
+    [WallBounce i rp (Tape NilC o (o' :@ rs)) L]
+  Tape NilC i rp :=> (rhs, d) ->
+    [WallBounce i rp rhs d]
   _ -> []
+
+wallBounceRule :: MacroRule -> [MacroRule]
+wallBounceRule (Rule c s w) = [ Rule c s w | c <- wallBounceClause c ]
+
+unWallBounce :: MacroClause -> MacroClause
+unWallBounce (WallBounce i rp rhs d) = Tape NilC i rp :=> (rhs, d)
+unWallBounce r = r
 
 ------------------------------------------------------------------------
 -- Running
@@ -196,10 +209,10 @@ macroRule r (_, tape) = do
       (ls, rs) <- matchLHS lhs tape
       pure (w, (s1, move d $ plugRHS ls rhs rs))
 
-    match (Rule (WallBounce x rp y rs) s1 w) (Tape l z r) = do
+    match (Rule (WallBounce x rp (Tape ls y rs) d) s1 w) (Tape l z r) = do
       guard $ (NilC, x) == (l, z)
       r₁ <- CList.dropPrefix rp r
-      pure (w, (s1, Tape NilC y (rs <> r₁)))
+      pure (w, (s1, move d $ Tape ls y (rs <> r₁)))
 
     match rule@(Rule (BatchR (Tape lp x rp) rp₂ ls₂ (Tape ls y rs)) s1 w) tape@(Tape l z r) = do
       guard $ x == z
@@ -252,9 +265,9 @@ combineStep lastRules m conf@(s, Tape l _ _) =
   case macroStep m conf of
     Nothing            -> Nothing
     Just (w, r, conf') ->
-      trace (show $ nest 2 $ vcat [ "U" <+> pPrint r
-                                  , "L" <+> vcat (map pPrint lastRules)
-                                  ]) $
+      -- trace (show $ nest 2 $ vcat [ "U" <+> pPrint r
+      --                             , "L" <+> vcat (map pPrint lastRules)
+      --                             ]) $
         Just (w, lastRules', m', conf')
       where
         newRules = do
@@ -501,8 +514,8 @@ exploreIO n fuel = go noStats 0 0 (Terminated 0 0, mempty) $ runExplore n fuel
 ------------------------------------------------------------------------
 
 instance Pretty MacroClause where
-  pPrint (i :=> o) = hsep [ pPrint i, "=>", pPrint o ]
-  pPrint (WallBounce i rp o rs) = hsep [ "|", brackets $ pPrint i, pPrint rp, "=> |", brackets $ pPrint o, pPrint rs ]
+  pPrint (i :=> (rhs, d)) = hsep [ pPrint i, "=>", pPrint rhs, pPrint d ]
+  pPrint (WallBounce i rp rhs d) = hsep [ "|", brackets $ pPrint i, pPrint rp, "=> |", pPrint rhs, pPrint d ]
   pPrint (BatchR i rp ls o) = hsep [ pPrint i, pPrintPrec prettyNormal 2 rp <> "ⁿ", "=>"
                                    , pPrintPrec prettyNormal 2 (CList.reverse ls) <> "ⁿ", pPrint o ]
   pPrint (BatchL lp i o rs) = hsep [ pPrintPrec prettyNormal 2 (CList.reverse lp) <> "ⁿ", pPrint i, "=>"
