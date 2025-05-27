@@ -57,24 +57,23 @@ Steps
     - how are batching done in patterns?
 -}
 
--- ε [0] 0³ (0⁴)ⁿ => (010²)ⁿ 010 [0] ε, A (cost 8)
-r :: MacroRule
-r = Rule (BatchR (Tape (CList []) 0 (CList [[0] :^ 3]))
-                 (CList [[0] :^ 4])
-                 (CList [[0] :^ 2,[1,0] :^ 1])
-                 (Tape (CList [[0,1,0] :^ 1]) 0 (CList [])))
-         A 8
-
-conf = (A,Tape (CList [[0] :^ 2,[1,0] :^ 1]) 0 (CList [[0] :^ 999999999999996]))
-
 xs = CList [[0, 0, 1, 0] :^ 1_000_000_000_000]
 ys = CList.fromList [0, 0, 1, 0]
 
 mkR :: Wall -> Tape -> Tape -> Dir -> MacroRule
 mkR w lhs rhs d = Rule (Clause w lhs rhs d) A 1
 
-r1 = mkR YesWall (mkTape [1] 1 [0]) (mkTape [] 0 [1, 1, 1]) L
-r2 = mkR YesWall (mkTape [] 0 [1])  (mkTape [0, 0, 0] 0 [1, 0]) L
+mkBR :: Tape -> [Symbol] -> [Symbol] -> Tape -> MacroRule
+mkBR lhs rp ls rhs = Rule (BatchR lhs (CList.fromList rp) (CList.fromList ls) rhs) A 1
+
+r1 = mkR AnyWall (mkTape [] 1 [1]) (mkTape [] 0 [0]) R
+r2 = mkR NoWall  (mkTape [0] 0 []) (mkTape [] 0 [1, 1]) R
+
+r = mkBR (mkTape [1,1,1] 0 [0]) [1] [1] (mkTape [1,1,1,1] 1 [])
+
+app r tape = case macroRule r (A, tape) of
+  Just (_, _, (_, tape)) -> Just tape
+  Nothing -> Nothing
 
 -- Benchmarking -----------------------------------------------------------
 
@@ -183,3 +182,20 @@ badBB3₅ = [ (A, 1) :-> (A, 1, R)
           , (B, 1) :-> (C, 1, L)
           , (B, 0) :-> (B, 1, L)
           , (C, 1) :-> (A, 1, L) ]
+
+-- AnyWall pattern
+--  Loop            2941  (22.0%)
+--  OutOfFuel       3414  (25.6%)
+--  StuckLeft       1250  ( 9.4%)
+--  Terminated      5748  (43.0%)
+--  Total          13353
+--  Average steps: 15.4
+--  Max steps:     2010
+--  Time:          1.3s
+
+badBB3₆ :: Machine
+badBB3₆ = [ (A, 1) :-> (B, 1, L)
+          , (A, 0) :-> (A, 1, L)
+          , (B, 1) :-> (C, 1, L)
+          , (C, 0) :-> (A, 0, R)
+          , (C, 1) :-> (C, 1, R) ]

@@ -31,7 +31,7 @@ import Turing.Machine
 
 type LHS = Tape
 type RHS = Tape
-data Wall = NoWall | YesWall
+data Wall = NoWall | YesWall | AnyWall
   deriving (Eq, Ord, Show)
 
 data MacroClause = Clause Wall LHS RHS Dir
@@ -63,10 +63,12 @@ addRule s r (MacroMachine m) = MacroMachine $ Map.insertWith ins s [r] m
 ruleCost :: MacroRule -> Int
 ruleCost (Rule _ _ w) = w
 
-instance Semigroup Wall where
-  YesWall <> _ = YesWall
-  _ <> YesWall = YesWall
-  NoWall <> NoWall = NoWall
+-- instance Semigroup Wall where
+--   AnyWall <> w = w
+--   w <> AnyWall = w
+--   YesWall <> _ = YesWall
+--   _ <> YesWall = YesWall
+--   NoWall <> NoWall = NoWall
 
 instance Semigroup MacroMachine where
   MacroMachine m <> MacroMachine m' = MacroMachine $ Map.unionWith (++) m m'
@@ -80,7 +82,10 @@ instance Monoid MacroMachine where
 
 basicRule :: Rule -> MacroRule
 basicRule ((_, i) :-> (s', o, d)) =
-  Rule (Clause NoWall (Tape mempty i mempty) (Tape mempty o mempty) d) s' 1
+  Rule (Clause w (Tape mempty i mempty) (Tape mempty o mempty) d) s' 1
+  where
+    w | d == R    = AnyWall
+      | otherwise = NoWall
 
 fromPrimRule :: Rule -> MacroMachine
 fromPrimRule r@((s, _) :-> (s', o, d)) =
@@ -94,7 +99,8 @@ fromPrim = foldMap fromPrimRule
 toPrim :: MacroMachine -> Machine
 toPrim (MacroMachine m) = [ (s, i) :-> (s', o, d)
                           | (s, rs) <- Map.toList m
-                          , Rule (Clause NoWall (Tape NilC i NilC) (Tape NilC o NilC) d) s' 1 <- rs ]
+                          , Rule (Clause w (Tape NilC i NilC) (Tape NilC o NilC) d) s' 1 <- rs
+                          , w /= YesWall ]
 
 -- Combining rules --------------------------------------------------------
 
@@ -149,25 +155,39 @@ combineRules' r₁@(Rule c₁ _ w₁) r₂@(Rule c₂ s₂ w₂) = do
   --               , "=" <+> pPrint r ]) $
   pure r
 
+infix 1 ===>
+(===>) :: Bool -> Bool -> Bool
+True  ===> x = x
+False ===> _ = True
+
 combineClauses :: MacroClause -> MacroClause -> Maybe MacroClause
 combineClauses (Clause YesWall (Tape lp₁ i₁ rp₁) (move L -> Tape ls₁ o₁ rs₁) L)
-               (Clause YesWall (Tape lp₂ i₂ rp₂) (Tape ls₂ o₂ rs₂) d₂) = do
-  guard $ (ls₁, o₁) == (lp₂, i₂)
+               (Clause w (Tape lp₂ i₂ rp₂) (Tape ls₂ o₂ rs₂) d₂) = do
+  guard $ o₁ == i₂
+  (lp, ls) <- CList.dropEitherPrefix lp₂ ls₁
+  guard $ case w of
+            YesWall -> (lp, ls) == (NilC, NilC)
+            NoWall  -> ls /= NilC
+            AnyWall -> True
   (rp, rs) <- CList.dropEitherPrefix rp₂ rs₁
-  pure $ Clause YesWall (Tape lp₁ i₁ (rp₁ <> rp)) (Tape ls₂ o₂ (rs₂ <> rs)) d₂
+  -- () <- traceM $ show $ "(lp, ls) =" <+> pPrint (lp, ls)
+  pure $ Clause YesWall (Tape (lp₁ <> lp) i₁ (rp₁ <> rp)) (Tape (ls₂ <> ls) o₂ (rs₂ <> rs)) d₂
 combineClauses (Clause w₁ lhs₁ rhs₁ d₁) (Clause w₂ lhs₂ rhs₂ d₂) = do
-    ((lp₁, rp₁), (ls₂, rs₂)) <- chainMatch lhs₂ rhs₁ d₁
+    c@((lp₁, rp₁), (ls₂, rs₂)) <- chainMatch lhs₂ rhs₁ d₁
+    -- () <- traceM $ show $ pPrint c
     let lhs@(Tape lp _ rp) = plugLHS lp₁ lhs₁ rp₁
         rhs = plugRHS ls₂ rhs₂ rs₂
-    guard $ w₁ == NoWall || lp₁ == NilC
-    guard $ w₂ == NoWall || ls₂ == NilC
-    pure $ Clause (w₁ <> w₂) lhs rhs d₂
-combineClauses rule₁@(Clause YesWall _ _ R) rule₂
-  | Just c <- combineClauses (unWallBounce rule₁) rule₂
-  , [bc] <- wallBounceClause c = pure bc
-combineClauses rule₁@(Clause YesWall _ (Tape (_ :@ _) _ _) L) rule₂
-  | Just c <- combineClauses (unWallBounce rule₁) rule₂
-  , [bc] <- wallBounceClause c = pure bc
+    -- () <- traceM $ show $ "lhs =" <+> pPrint lhs
+    -- () <- traceM $ show $ "rhs =" <+> pPrint rhs
+    guard $ w₁ == YesWall ===> lp₁ == NilC
+    guard $ w₂ == YesWall ===> ls₂ == NilC
+    let glb AnyWall w = pure w
+        glb w AnyWall = pure w
+        glb w₁ w₂     = w₁ <$ guard (w₁ == w₂)
+    w <- if | (lp₁, ls₂) == (NilC, NilC) -> glb w₁ w₂
+            | lp₁ == NilC                -> pure w₁
+            | otherwise                  -> pure w₂
+    pure $ Clause w lhs rhs d₂
 combineClauses _ _ = Nothing
 
 -- Batching ---------------------------------------------------------------
@@ -184,32 +204,44 @@ batchLeft (Tape lp x rp) (Tape ls y rs) = do
   pure (lp₂, rs₂)
 
 batchRule :: State -> MacroRule -> [MacroRule]
-batchRule s rule@(Rule (Clause NoWall lhs rhs R) s' w)
+batchRule s rule@(Rule (Clause w lhs (Tape (l₁ :@ l₂ :@ ls) o rs) L) s' k)
+  | rs@(_ : _ : _) <- batchRule s (Rule (Clause w lhs (Tape ls l₂ (l₁ :@ o :@ rs)) R) s' k)
+  = rs
+batchRule s rule@(Rule (Clause w lhs rhs R) s' k)
   | s == s'
+  , w /= YesWall
   , Just (ls, rp) <- batchRight lhs rhs
-  , not $ null rp = [Rule (BatchR lhs rp ls rhs) s w, rule]
-batchRule s rule@(Rule (Clause NoWall lhs rhs L) s' w)
-  | s == s'
+  , not $ null rp = [Rule (BatchR lhs rp ls rhs) s k, rule]
+batchRule s rule@(Rule (Clause w lhs rhs L) s' k)
+  | w /= YesWall
+  , s == s'
   , Just (lp, rs) <- batchLeft lhs rhs
-  , not $ null lp = [Rule (BatchL lp lhs rhs rs) s w, rule]
+  , not $ null lp = [Rule (BatchL lp lhs rhs rs) s k, rule]
+batchRule s rule
+  | Just r <- unbatchRule rule
+  , r' : _ : _ <- batchRule s r
+  , r' /= rule = [r', rule]
 batchRule _ rule = [rule]
+
+unbatchRule :: MacroRule -> Maybe MacroRule
+unbatchRule (Rule (BatchR lhs _ _ rhs) s k) = pure $ Rule (Clause AnyWall lhs rhs R) s k
+unbatchRule (Rule (BatchL _ lhs rhs _) s k) = pure $ Rule (Clause AnyWall lhs rhs L) s k
+unbatchRule _ = Nothing
 
 -- Wall bounces -----------------------------------------------------------
 
 wallBounceClause :: MacroClause -> [MacroClause]
 wallBounceClause = \ case
-  Clause NoWall (Tape NilC i rp) (Tape (o :@ NilC) o' rs) L ->
-    [Clause YesWall (Tape NilC i rp) (Tape NilC o (o' :@ rs)) L]
-  Clause NoWall (Tape NilC i rp) rhs d ->
-    [Clause YesWall (Tape NilC i rp) rhs d]
+  Clause w (Tape lp i rp) (Tape (o :@ NilC) o' rs) L | w /= YesWall ->
+    [Clause YesWall (Tape lp i rp) (Tape NilC o (o' :@ rs)) L]
+  Clause w (Tape lp i rp) (Tape NilC o rs) L | w /= YesWall ->
+    [Clause YesWall (Tape lp i rp) (Tape NilC o rs) L]
+  -- Clause NoWall (Tape NilC i rp) rhs d ->
+  --   [Clause YesWall (Tape NilC i rp) rhs d]
   _ -> []
 
 wallBounceRule :: MacroRule -> [MacroRule]
 wallBounceRule (Rule c s w) = [ Rule c s w | c <- wallBounceClause c ]
-
-unWallBounce :: MacroClause -> MacroClause
-unWallBounce (Clause YesWall lhs rhs d) = Clause NoWall lhs rhs d
-unWallBounce r = r
 
 ------------------------------------------------------------------------
 -- Running
@@ -229,7 +261,10 @@ macroRule r (_, tape) = do
   where
     match (Rule (Clause wall lhs rhs d) s1 w) tape = do
       (ls, rs) <- matchLHS lhs tape
-      guard $ (wall == YesWall) == (ls == NilC)
+      guard $ case wall of
+                YesWall -> ls == NilC
+                NoWall  -> ls /= NilC
+                AnyWall -> True
       pure (w, (s1, move d $ plugRHS ls rhs rs))
 
     match rule@(Rule (BatchR (Tape lp x rp) rp₂ ls₂ (Tape ls y rs)) s1 w) tape@(Tape l z r) = do
@@ -533,7 +568,8 @@ exploreIO n fuel = go noStats 0 0 (Terminated 0 0, mempty) $ runExplore n fuel
 instance Pretty MacroClause where
   pPrint (Clause w lhs rhs d) = hsep [ pw, pPrint lhs, "=>", pPrint rhs, pPrint d ]
     where pw | w == YesWall = "|"
-             | otherwise    = Text.Pretty.empty
+             | w == AnyWall = "?"
+             | otherwise    = "…"
   pPrint (BatchR i rp ls o) = hsep [ pPrint i, pPrintPrec prettyNormal 2 rp <> "ⁿ", "=>"
                                    , pPrintPrec prettyNormal 2 (CList.reverse ls) <> "ⁿ", pPrint o ]
   pPrint (BatchL lp i o rs) = hsep [ pPrintPrec prettyNormal 2 (CList.reverse lp) <> "ⁿ", pPrint i, "=>"
@@ -550,9 +586,8 @@ instance Pretty MacroMachine where
 ------------------------------------------------------------------------
 
 instance Arbitrary Wall where
-  arbitrary = elements [NoWall, YesWall]
-  shrink YesWall = [NoWall]
-  shrink NoWall  = []
+  arbitrary = elements [NoWall, YesWall, AnyWall]
+  shrink _ = []
 
 instance Arbitrary MacroClause where
   arbitrary = Clause <$> arbitrary <*> genLHS <*> genPat <*> arbitrary
@@ -577,14 +612,28 @@ instance Arbitrary MacroRule where
   shrink (Rule c s w) =
     [ Rule c s w | (c, s, w) <- shrink (c, s, w), w > 0 ]
 
+genSmallTape :: Gen Tape
+genSmallTape = Tape <$> syms <*> arbitrary <*> syms
+  where
+    syms = CList.fromList <$> frequency
+      [ (3, pure [])
+      , (2, vectorOf 1 arbitrary)
+      , (1, vectorOf 2 arbitrary)
+      , (1, vectorOf 3 arbitrary)
+      ]
+
 genMatchingRule :: Tape -> Gen MacroRule
 genMatchingRule (Tape l x r) = do
   nl <- choose (0, CList.length l)
   nr <- choose (0, CList.length r)
   let tk n = CList.fromList . take n . toList
-  (rhs, d, s, k) <- arbitrary
-  let w | nl == CList.length l = YesWall
-        | otherwise            = NoWall
+  rhs <- genSmallTape
+  (d, s, k) <- arbitrary
+  let oob = case (d, rhs) of
+              (L, Tape NilC _ _) -> True
+              _                  -> False
+  w <- if | nl == CList.length l -> elements $ YesWall : [AnyWall | not oob]
+          | otherwise            -> elements $ NoWall  : [AnyWall | not oob]
   pure $ Rule (Clause w (Tape (tk nl l) x (tk nr r)) rhs d) s k
 
 shrinkMatchingRule :: Tape -> MacroRule -> [MacroRule]
@@ -598,8 +647,9 @@ prop_matchingRule tape = forAll (genMatchingRule tape) $ \ r ->
 
 -- prop_combine :: MacroRule -> MacroRule -> Property
 -- prop_combine r1 r2 =
-prop_combine :: Tape -> Property
-prop_combine tape =
+prop_combine :: Property
+prop_combine =
+  forAllShrink genSmallTape shrink $ \ tape ->
   forAllShrink (genMatchingRule tape) (shrinkMatchingRule tape) $ \ r1 ->
   let (_, tape') = fromMaybe discard $ apply r1 (A, tape) in
   forAllShrink (genMatchingRule tape') (shrinkMatchingRule tape') $ \ r2 ->
@@ -622,9 +672,9 @@ prop_combine tape =
                       , "r3 =" <+> pPrint r3
                       , "---"
                       , "init:" <+> pPrint conf
-                      , "r3 ->" <+> pPrint (apply r3 conf)
                       , "r1 ->" <+> pPrint (apply r1 conf)
                       , "r2 ->" <+> pPrint (apply r2 =<< apply r1 conf)
+                      , "r3 ->" <+> pPrint (apply r3 conf)
                       ] $
       apply r3 conf === (apply r2 =<< apply r1 conf)
       where conf = (A, lhs)
