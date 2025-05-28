@@ -66,13 +66,18 @@ mkR w lhs rhs d = Rule (Clause w lhs rhs d) A 1
 mkBR :: Tape -> [Symbol] -> [Symbol] -> Tape -> MacroRule
 mkBR lhs rp ls rhs = Rule (BatchR lhs (CList.fromList rp) (CList.fromList ls) rhs) A 1
 
-r1 = mkR AnyWall (mkTape [] 1 [1]) (mkTape [] 0 [0]) R
-r2 = mkR NoWall  (mkTape [0] 0 []) (mkTape [] 0 [1, 1]) R
+mkBL :: [Symbol] -> Tape -> Tape -> [Symbol] -> MacroRule
+mkBL lp lhs rhs rs = Rule (BatchL (CList.fromList lp) lhs rhs (CList.fromList rs)) A 1
+
+-- | ε [0] 0⁵ => 1³ [1] 1² R, C (cost 63)
+r1 = mkR YesWall (mkTape [] 0 [0, 0, 0, 0, 0]) (mkTape [1, 1, 1] 1 [1, 1]) R
+-- 1ⁿ ε [1] ε => ε [0] ε 0ⁿ, C (cost 1)
+r2 = mkBL [1] (mkTape [] 1 []) (mkTape [] 0 []) [0]
 
 r = mkBR (mkTape [1,1,1] 0 [0]) [1] [1] (mkTape [1,1,1,1] 1 [])
 
 app r tape = case macroRule r (A, tape) of
-  Just (_, _, (_, tape)) -> Just tape
+  Just (_, _, _, (_, tape)) -> Just tape
   Nothing -> Nothing
 
 -- Benchmarking -----------------------------------------------------------
@@ -199,3 +204,37 @@ badBB3₆ = [ (A, 1) :-> (B, 1, L)
           , (B, 1) :-> (C, 1, L)
           , (C, 0) :-> (A, 0, R)
           , (C, 1) :-> (C, 1, R) ]
+
+-- Combining with batched rules
+--  Loop            2941  (22.0%)
+--  OutOfFuel       3414  (25.6%)
+--  StuckLeft       1250  ( 9.4%)
+--  Terminated      5748  (43.0%)
+--  Total          13353
+--  Average steps: 15.0
+--  Max steps:     1271
+--  Time:          1.3s
+
+-- Quite an interesting counting machine
+badBB3₇ :: Machine
+badBB3₇ = [ (A, 1) :-> (B, 0, R)
+          , (A, 0) :-> (A, 1, L)
+          , (B, 1) :-> (B, 0, R)
+          , (B, 0) :-> (C, 1, L)
+          , (C, 0) :-> (A, 0, L) ]
+
+badBB3₈ :: Machine
+badBB3₈ = [ (A, 1) :-> (C, 1, R)
+          , (A, 0) :-> (B, 1, L)
+          , (B, 1) :-> (C, 1, L)
+          , (C, 0) :-> (A, 1, R)
+          , (C, 1) :-> (C, 0, L) ]
+
+--  Loop            2941  (22.0%)
+--  OutOfFuel       3414  (25.6%)
+--  StuckLeft       1250  ( 9.4%)
+--  Terminated      5748  (43.0%)
+--  Total          13353
+--  Average steps: 14.3
+--  Max steps:     1088   (badBB3₇)
+--  Time:          2.1s

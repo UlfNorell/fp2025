@@ -188,7 +188,30 @@ combineClauses (Clause w₁ lhs₁ rhs₁ d₁) (Clause w₂ lhs₂ rhs₂ d₂)
             | lp₁ == NilC                -> pure w₁
             | otherwise                  -> pure w₂
     pure $ Clause w lhs rhs d₂
+combineClauses (Clause w lhs rhs d)
+               (BatchR (Tape lp₂ i₂ rp₂) rrp₂ lls₂ (Tape ls₂ o₂ rs₂)) = do
+  (Tape lp₁ i₁ rp₁, Tape ls₁ o₁ rs₁) <- alignOn i₂ lhs rhs d
+  (lp, NilC) <- CList.dropEitherPrefix lp₂ ls₁
+  (rp, rs)   <- CList.dropEitherPrefix rp₂ rs₁
+  (NilC, k)  <- pure $ CList.dropRepeatedPrefix rrp₂ rs
+  pure $ BatchR (Tape (lp₁ <> lp) i₁ (rp₁ <> rp)) rrp₂
+                lls₂ (Tape (ls₂ <> CList.concatReplicate k lls₂) o₂ rs₂)
+
 combineClauses _ _ = Nothing
+
+alignOn :: Symbol -> Tape -> Tape -> Dir -> Maybe (Tape, Tape)
+alignOn x lhs rhs d
+  | Just rhs' <- safeMove d rhs = (lhs, rhs) <$ guard (look rhs' == x)
+alignOn x (Tape lp i rp) (Tape NilC o rs) L =
+  pure (Tape (lp <> CList.fromList [x]) i rp, Tape NilC x (o :@ rs))
+alignOn x (Tape lp i rp) (Tape ls o NilC) R =
+  pure (Tape lp i (rp <> CList.fromList [x]), Tape (o :@ ls) x NilC)
+alignOn _ _ _ _ = Nothing
+
+safeMove :: Dir -> Tape -> Maybe Tape
+safeMove L (Tape (x :@ l) y r) = pure $ Tape l x (y :@ r)
+safeMove R (Tape l y (x :@ r)) = pure $ Tape (y :@ l) x r
+safeMove _ _ = Nothing
 
 -- Batching ---------------------------------------------------------------
 
@@ -218,15 +241,25 @@ batchRule s rule@(Rule (Clause w lhs rhs L) s' k)
   , Just (lp, rs) <- batchLeft lhs rhs
   , not $ null lp = [Rule (BatchL lp lhs rhs rs) s k, rule]
 batchRule s rule
-  | Just r <- unbatchRule rule
+  | Just r <- unbatchRule 0 rule
   , r' : _ : _ <- batchRule s r
   , r' /= rule = [r', rule]
 batchRule _ rule = [rule]
 
-unbatchRule :: MacroRule -> Maybe MacroRule
-unbatchRule (Rule (BatchR lhs _ _ rhs) s k) = pure $ Rule (Clause AnyWall lhs rhs R) s k
-unbatchRule (Rule (BatchL _ lhs rhs _) s k) = pure $ Rule (Clause AnyWall lhs rhs L) s k
-unbatchRule _ = Nothing
+(|>) :: CList Symbol -> Tape -> Tape
+l' |> Tape l x r = Tape (l <> l') x r
+
+(<|) :: Tape -> CList Symbol -> Tape
+Tape l x r <| r' = Tape l x (r <> r')
+
+unbatchRule :: Int -> MacroRule -> Maybe MacroRule
+unbatchRule n (Rule (BatchR lhs rp ls rhs) s k) =
+  pure $ Rule (Clause AnyWall (lhs <| CList.concatReplicate n rp)
+                              (CList.concatReplicate n ls |> rhs) R) s k
+unbatchRule n (Rule (BatchL lp lhs rhs rs) s k) =
+  pure $ Rule (Clause AnyWall (CList.concatReplicate n lp |> lhs)
+                              (rhs <| CList.concatReplicate n rs) L) s k
+unbatchRule _ _ = Nothing
 
 -- Wall bounces -----------------------------------------------------------
 
@@ -254,10 +287,10 @@ matchLHS (Tape lp x rp) (Tape ls y rs)
   , Just rs' <- CList.dropPrefix rp rs = pure (ls', rs')
 matchLHS _ _ = Nothing
 
-macroRule :: MacroRule -> Config -> Maybe (Int, MacroRule, Config)
+macroRule :: MacroRule -> Config -> Maybe (Int, Int, MacroRule, Config)
 macroRule r (_, tape) = do
-  (n, conf) <- match r tape
-  pure (n, r, conf)
+  (j, n, conf) <- match r tape
+  pure (j, n, r, conf)
   where
     match (Rule (Clause wall lhs rhs d) s1 w) tape = do
       (ls, rs) <- matchLHS lhs tape
@@ -265,7 +298,7 @@ macroRule r (_, tape) = do
                 YesWall -> ls == NilC
                 NoWall  -> ls /= NilC
                 AnyWall -> True
-      pure (w, (s1, move d $ plugRHS ls rhs rs))
+      pure (1, w, (s1, move d $ plugRHS ls rhs rs))
 
     match rule@(Rule (BatchR (Tape lp x rp) rp₂ ls₂ (Tape ls y rs)) s1 w) tape@(Tape l z r) = do
       guard $ x == z
@@ -274,7 +307,7 @@ macroRule r (_, tape) = do
       let (r₂, n) = CList.dropRepeatedPrefix rp₂ r₁
       guard $ n > 3
       let result = move R $ Tape (ls <> CList.concatReplicate n ls₂ <> l₁) y (rs <> r₂)
-      pure ((n + 1) * w, (s1, result))
+      pure (n, (n + 1) * w, (s1, result))
 
     match rule@(Rule (BatchL lp₂ (Tape lp x rp) (Tape ls y rs) rs₂) s1 w) tape@(Tape l z r) = do
       guard $ x == z
@@ -283,9 +316,9 @@ macroRule r (_, tape) = do
       let (l₂, n) = CList.dropRepeatedPrefix lp₂ l₁
       guard $ n > 3
       let result = move L $ Tape (ls <> l₂) y (rs <> CList.concatReplicate n rs₂ <> r₁)
-      pure ((n + 1) * w, (s1, result))
+      pure (n, (n + 1) * w, (s1, result))
 
-macroStep :: MacroMachine -> Config -> Maybe (Int, MacroRule, Config)
+macroStep :: MacroMachine -> Config -> Maybe (Int, Int, MacroRule, Config)
 macroStep m conf@(s, _) = foldr (<|>) Nothing [ macroRule r conf | r <- rules m s ]
 
 macroRun :: Int -> MacroMachine -> (Result, MacroMachine)
@@ -317,7 +350,7 @@ combineStep :: LastRules
 combineStep lastRules m conf@(s, Tape l _ _) =
   case macroStep m conf of
     Nothing            -> Nothing
-    Just (w, r, conf') ->
+    Just (j, w, r, conf') ->
       -- trace (show $ vcat (map pPrint lastRules')) $
         Just (w, lastRules', m', conf')
       where
@@ -325,7 +358,10 @@ combineStep lastRules m conf@(s, Tape l _ _) =
           (s0, r0) <- lastRules
           let wrs | isWall    = wallBounceRule r
                   | otherwise = []
-          [ (s0, r') | r' <- catMaybes $ combineRules r0 r : [ combineRules r0 wr | wr <- wrs ] ]
+              urs = maybe [] pure $ unbatchRule j r
+          [ (s0, r') | r' <- catMaybes $ combineRules r0 r
+                                       : [ combineRules r0 wr | wr <- wrs ]
+                                      ++ [ combineRules r0 ur | ur <- urs ] ]
             ++ [ (s, wr) | wr <- wrs ]
         m' = foldr addNew m newRules
         lastRules' = (s, r) : newRules
@@ -679,7 +715,7 @@ prop_combine =
       apply r3 conf === (apply r2 =<< apply r1 conf)
       where conf = (A, lhs)
   where
-    apply r conf = do (_, _, conf) <- macroRule r conf; pure conf
+    apply r conf = do (_, _, _, conf) <- macroRule r conf; pure conf
 
 prop_batch :: NonNegative Int -> MacroRule -> Property
 prop_batch (NonNegative ((+ 4) -> n)) r@(Rule _ s _) = case batchRule s r of
@@ -695,7 +731,7 @@ prop_batch (NonNegative ((+ 4) -> n)) r@(Rule _ s _) = case batchRule s r of
       tape = Tape lp x (rp <> CList.concatReplicate n rp₂)
       expect = foldM apply (A, tape) $ replicate (n + 1) r
       actual = apply (A, tape) b
-      apply conf r = do (_, _, conf) <- macroRule r conf; pure conf
+      apply conf r = do (_, _, _, conf) <- macroRule r conf; pure conf
   b@(Rule (BatchL lp₂ (Tape lp x rp) _ _) _ w) : _ ->
     counterexampleD [ "r =" <+> pPrint r
                     , "b =" <+> pPrint b
@@ -708,5 +744,5 @@ prop_batch (NonNegative ((+ 4) -> n)) r@(Rule _ s _) = case batchRule s r of
       tape = Tape (CList.concatReplicate n lp₂ <> lp) x rp
       expect = foldM apply (A, tape) $ replicate (n + 1) r
       actual = apply (A, tape) b
-      apply conf r = do (_, _, conf) <- macroRule r conf; pure conf
+      apply conf r = do (_, _, _, conf) <- macroRule r conf; pure conf
   _ -> discard
