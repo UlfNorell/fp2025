@@ -11,6 +11,10 @@ newtype Symbol = Symbol Int
 data Dir = L | R
   deriving (Eq, Ord, Show, Enum)
 
+op :: Dir -> Dir
+op L = R
+op R = L
+
 data State = A | B | C | D | E | F | H
   deriving (Eq, Ord, Show, Enum, Bounded)
 

@@ -74,7 +74,8 @@ r1 = mkR YesWall (mkTape [] 0 [0, 0, 0, 0, 0]) (mkTape [1, 1, 1] 1 [1, 1]) R
 -- 1ⁿ ε [1] ε => ε [0] ε 0ⁿ, C (cost 1)
 r2 = mkBL [1] (mkTape [] 1 []) (mkTape [] 0 []) [0]
 
-r = mkBR (mkTape [1,1,1] 0 [0]) [1] [1] (mkTape [1,1,1,1] 1 [])
+-- ? 101 [0] ε => ε [1] 011 R, A (cost 6)
+r = mkR AnyWall (mkTape [1, 0, 1] 0 []) (mkTape [] 1 [0, 1, 1]) R
 
 app r tape = case macroRule r (A, tape) of
   Just (_, _, _, (_, tape)) -> Just tape
@@ -230,11 +231,29 @@ badBB3₈ = [ (A, 1) :-> (C, 1, R)
           , (C, 0) :-> (A, 1, R)
           , (C, 1) :-> (C, 0, L) ]
 
+-- Improved batch rule combination
 --  Loop            2941  (22.0%)
 --  OutOfFuel       3414  (25.6%)
 --  StuckLeft       1250  ( 9.4%)
 --  Terminated      5748  (43.0%)
 --  Total          13353
---  Average steps: 14.3
---  Max steps:     1088   (badBB3₇)
---  Time:          2.1s
+--  Average steps: 14.3 - 128.4
+--  Max steps:     1088 - 38,511
+--  Time:          2.1s - 8.7s
+
+badBB3₉ :: Machine
+badBB3₉ = [ (A, 1) :-> (C, 0, R)
+          , (A, 0) :-> (B, 1, L)
+          , (B, 1) :-> (C, 0, L)
+          , (C, 1) :-> (A, 1, R)
+          , (C, 0) :-> (A, 1, R) ]
+
+-- Batching with last step in wrong direction
+-- Loop            2941  (22.0%)
+-- OutOfFuel       3414  (25.6%)
+-- StuckLeft       1250  ( 9.4%)
+-- Terminated      5748  (43.0%)
+-- Total          13353
+-- Average steps: 14.2  - 109.1
+-- Max steps:     1088  - 28,238
+-- Time:          2.1s  - 8.3s

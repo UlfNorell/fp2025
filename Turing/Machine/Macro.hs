@@ -226,6 +226,14 @@ batchLeft (Tape lp x rp) (Tape ls y rs) = do
   (rs₂, lp₂) <- batchRight (Tape rp x lp) (Tape rs y ls)
   pure (lp₂, rs₂)
 
+batchDir :: Dir -> LHS -> RHS -> Maybe MacroClause
+batchDir L lhs rhs = do
+  (lp, rs) <- batchLeft lhs rhs
+  pure $ BatchL lp lhs rhs rs
+batchDir R lhs rhs = do
+  (ls, rp) <- batchRight lhs rhs
+  pure $ BatchR lhs rp ls rhs
+
 batchRule :: State -> MacroRule -> [MacroRule]
 batchRule s rule@(Rule (Clause w lhs (Tape (l₁ :@ l₂ :@ ls) o rs) L) s' k)
   | rs@(_ : _ : _) <- batchRule s (Rule (Clause w lhs (Tape ls l₂ (l₁ :@ o :@ rs)) R) s' k)
@@ -240,6 +248,12 @@ batchRule s rule@(Rule (Clause w lhs rhs L) s' k)
   , s == s'
   , Just (lp, rs) <- batchLeft lhs rhs
   , not $ null lp = [Rule (BatchL lp lhs rhs rs) s k, rule]
+batchRule s rule@(Rule (Clause w lhs rhs d) s' k)
+  | w /= YesWall
+  , s == s'
+  , Just rhs' <- safeMove d =<< safeMove d rhs
+  , Just cls  <- batchDir (op d) lhs rhs'
+  = [Rule cls s k, rule]
 batchRule s rule
   | Just r <- unbatchRule 0 rule
   , r' : _ : _ <- batchRule s r
