@@ -70,12 +70,12 @@ mkBL :: [Symbol] -> Tape -> Tape -> [Symbol] -> MacroRule
 mkBL lp lhs rhs rs = Rule (BatchL (CList.fromList lp) lhs rhs (CList.fromList rs)) A 1
 
 -- … 0 [0] ε => ε [0] 1 L, A (cost 2)
-r1 = mkR NoWall (mkTape [0] 0 []) (mkTape [] 0 [1]) L
+r1 = mkR AnyWall (mkTape [0] 0 []) (mkTape [] 0 [1]) L
 -- 0ⁿ ε [0] ε => ε [1] ε 1ⁿ, A (cost 1)
 r2 = mkBL [0] (mkTape [] 0 []) (mkTape [] 1 []) [1]
 
 -- … 0 [0] ε => ε [0] 1 L, A (cost 2)
-r = mkR NoWall (mkTape [] 1 [0]) (mkTape [] 1 [1]) R
+r = mkR AnyWall (mkTape [] 1 [0]) (mkTape [] 1 [1]) R
 b = head $ batchRule A r
 
 app r tape = case macroRule r (A, tape) of
@@ -275,3 +275,13 @@ badBB3₁₀ = [ (A, 1) :-> (B, 0, R)
 --  Average steps: 13.1   - 102.2
 --  Max steps:     735    - 34,301
 --  Time:          1.6s   - 5.3s
+
+-- Get rid of NoWall
+--  Loop            2941  (22.0%)
+--  OutOfFuel       3414  (25.6%)
+--  StuckLeft       1250  ( 9.4%)
+--  Terminated      5748  (43.0%)
+--  Total          13353
+--  Average steps: 12.8   - 102.0
+--  Max steps:     748    - 34,314
+--  Time:          2.5s   - 6.1s

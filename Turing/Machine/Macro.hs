@@ -31,7 +31,7 @@ import Turing.Machine
 
 type LHS = Tape
 type RHS = Tape
-data Wall = NoWall | YesWall | AnyWall
+data Wall = YesWall | AnyWall
   deriving (Eq, Ord, Show)
 
 data MacroClause = Clause Wall LHS RHS Dir
@@ -65,10 +65,6 @@ zipMacroRules f (MacroRules b r) (MacroRules b' r') = MacroRules (f b b') (f r r
 
 newtype MacroMachine = MacroMachine (Map State MacroRules)
   deriving Show
-
-isWall :: Tape -> Wall
-isWall (Tape NilC _ _) = YesWall
-isWall _    = NoWall
 
 rules :: MacroMachine -> State -> MacroRules
 rules (MacroMachine m) s = fromMaybe mempty $ Map.lookup s m
@@ -111,10 +107,7 @@ instance Monoid MacroMachine where
 
 basicRule :: Rule -> MacroRule
 basicRule ((_, i) :-> (s', o, d)) =
-  Rule (Clause w (Tape mempty i mempty) (Tape mempty o mempty) d) s' 1
-  where
-    w | d == R    = AnyWall
-      | otherwise = NoWall
+  Rule (Clause AnyWall (Tape mempty i mempty) (Tape mempty o mempty) d) s' 1
 
 fromPrimRule :: Rule -> MacroMachine
 fromPrimRule r@((s, _) :-> (s', o, d)) =
@@ -200,7 +193,6 @@ combineClauses (Clause YesWall (Tape lp₁ i₁ rp₁) (move L -> Tape ls₁ o�
   (lp, ls) <- CList.dropEitherPrefix lp₂ ls₁
   guard $ case w of
             YesWall -> (lp, ls) == (NilC, NilC)
-            NoWall  -> ls /= NilC
             AnyWall -> True
   (rp, rs) <- CList.dropEitherPrefix rp₂ rs₁
   -- () <- traceM $ show $ "(lp, ls) =" <+> pPrint (lp, ls)
@@ -251,7 +243,9 @@ safeMove _ _ = Nothing
 batchRight :: LHS -> RHS -> Maybe (CList Symbol, CList Symbol)
 batchRight (Tape lp x rp) (Tape ls y rs)
   | Just rp₂ <- CList.dropPrefix rs (x :@ rp)
-  , Just ls₂ <- CList.dropPrefix lp (y :@ ls) = Just (ls₂, rp₂)
+  , Just ls₂ <- CList.dropPrefix lp (y :@ ls)
+  , not $ null rp₂
+  , not $ null ls₂ = Just (ls₂, rp₂)
 batchRight _ _ = Nothing
 
 batchLeft :: LHS -> RHS -> Maybe (CList Symbol, CList Symbol)
@@ -268,19 +262,16 @@ batchDir R lhs rhs = do
   pure $ BatchR lhs rp ls rhs
 
 batchRule :: State -> MacroRule -> [MacroRule]
-batchRule s rule@(Rule (Clause w lhs (Tape (l₁ :@ l₂ :@ ls) o rs) L) s' k)
-  | rs@(_ : _ : _) <- batchRule s (Rule (Clause w lhs (Tape ls l₂ (l₁ :@ o :@ rs)) R) s' k)
-  = rs
 batchRule s rule@(Rule (Clause w lhs rhs R) s' k)
   | s == s'
   , w /= YesWall
   , Just (ls, rp) <- batchRight lhs rhs
-  , not $ null rp = [Rule (BatchR lhs rp ls rhs) s k, rule]
+  = [Rule (BatchR lhs rp ls rhs) s k, rule]
 batchRule s rule@(Rule (Clause w lhs rhs L) s' k)
   | w /= YesWall
   , s == s'
   , Just (lp, rs) <- batchLeft lhs rhs
-  , not $ null lp = [Rule (BatchL lp lhs rhs rs) s k, rule]
+  = [Rule (BatchL lp lhs rhs rs) s k, rule]
 batchRule s rule@(Rule (Clause w lhs rhs d) s' k)
   | w /= YesWall
   , s == s'
@@ -343,7 +334,6 @@ macroRule r (_, tape) = do
       (ls, rs) <- matchLHS lhs tape
       guard $ case wall of
                 YesWall -> ls == NilC
-                NoWall  -> ls /= NilC
                 AnyWall -> True
       pure (1, w, (s1, move d $ plugRHS ls rhs rs))
 
@@ -623,10 +613,12 @@ printStats :: Stats -> IO ()
 printStats Stats{..} = do
   let total = sum statResults
       frac n = fromIntegral @_ @Double n / fromIntegral total
-  sequence_ [ printf "%-10s %9d  (%4.1f%%)\n" r n (100 * frac n)
+  sequence_ [ printf "--  %-10s %9d  (%4.1f%%)\n" r n (100 * frac n)
             | (r, n) <- Map.toList statResults ]
-  printf "%-10s %9d\n" ("Total" :: String) total
-  printf "Average steps: %.1f\n" (frac totalSteps)
+  printf "--  %-10s %9d\n" ("Total" :: String) total
+  printf "--  Average steps: %.1f\n" (frac totalSteps)
+  printf "--  Max steps:     %.1f\n" (0.0 :: Double)
+  printf "--  Time:          %.1fs\n" (0.0 :: Double)
 
 exploreIO :: Int -> Int -> IO ((Result, MacroMachine), Stats)
 exploreIO n fuel = go noStats 0 0 (Terminated 0 0, mempty) $ runExplore n fuel
@@ -653,8 +645,7 @@ exploreIO n fuel = go noStats 0 0 (Terminated 0 0, mempty) $ runExplore n fuel
 instance Pretty MacroClause where
   pPrint (Clause w lhs rhs d) = hsep [ pw, pPrint lhs, "=>", pPrint rhs, pPrint d ]
     where pw | w == YesWall = "|"
-             | w == AnyWall = "?"
-             | otherwise    = "…"
+             | otherwise    = Text.Pretty.empty
   pPrint (BatchR i rp ls o) = hsep [ pPrint i, pPrintPrec prettyNormal 2 rp <> "ⁿ", "=>"
                                    , pPrintPrec prettyNormal 2 (CList.reverse ls) <> "ⁿ", pPrint o ]
   pPrint (BatchL lp i o rs) = hsep [ pPrintPrec prettyNormal 2 (CList.reverse lp) <> "ⁿ", pPrint i, "=>"
@@ -672,7 +663,7 @@ instance Pretty MacroMachine where
 ------------------------------------------------------------------------
 
 instance Arbitrary Wall where
-  arbitrary = elements [NoWall, YesWall, AnyWall]
+  arbitrary = elements [YesWall, AnyWall]
   shrink _ = []
 
 instance Arbitrary MacroClause where
@@ -685,12 +676,12 @@ instance Arbitrary MacroClause where
         vectorOf n arbitrary
   shrink (Clause w lhs rhs d) = [ Clause w lhs rhs d | (w, lhs, rhs, d) <- shrink (w, lhs, rhs, d) ]
   shrink (BatchR lhs rp ls rhs) =
-    [ Clause NoWall lhs rhs R
-    , Clause NoWall lhs rhs L ] ++
+    [ Clause AnyWall lhs rhs R
+    , Clause AnyWall lhs rhs L ] ++
     [ BatchR lhs rp ls rhs | (lhs, rp, ls, rhs) <- shrink (lhs, rp, ls, rhs) ]
   shrink (BatchL lp lhs rhs rs) =
-    [ Clause NoWall lhs rhs R
-    , Clause NoWall lhs rhs L ] ++
+    [ Clause AnyWall lhs rhs R
+    , Clause AnyWall lhs rhs L ] ++
     [ BatchL lp lhs rhs rs | (lp, lhs, rhs, rs) <- shrink (lp, lhs, rhs, rs) ]
 
 instance Arbitrary MacroRule where
@@ -718,8 +709,8 @@ genMatchingRule (Tape l x r) = do
   let oob = case (d, rhs) of
               (L, Tape NilC _ _) -> True
               _                  -> False
-  w <- if | nl == CList.length l -> elements $ YesWall : [AnyWall | not oob]
-          | otherwise            -> elements $ NoWall  : [AnyWall | not oob]
+  w <- if | nl == CList.length l -> elements [YesWall, AnyWall]
+          | otherwise            -> pure AnyWall
   pure $ Rule (Clause w (Tape (tk nl l) x (tk nr r)) rhs d) s k
 
 shrinkMatchingRule :: Tape -> MacroRule -> [MacroRule]
