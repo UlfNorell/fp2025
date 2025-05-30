@@ -69,13 +69,14 @@ mkBR lhs rp ls rhs = Rule (BatchR lhs (CList.fromList rp) (CList.fromList ls) rh
 mkBL :: [Symbol] -> Tape -> Tape -> [Symbol] -> MacroRule
 mkBL lp lhs rhs rs = Rule (BatchL (CList.fromList lp) lhs rhs (CList.fromList rs)) A 1
 
--- | ε [0] 0⁵ => 1³ [1] 1² R, C (cost 63)
-r1 = mkR YesWall (mkTape [] 0 [0, 0, 0, 0, 0]) (mkTape [1, 1, 1] 1 [1, 1]) R
--- 1ⁿ ε [1] ε => ε [0] ε 0ⁿ, C (cost 1)
-r2 = mkBL [1] (mkTape [] 1 []) (mkTape [] 0 []) [0]
+-- … 0 [0] ε => ε [0] 1 L, A (cost 2)
+r1 = mkR NoWall (mkTape [0] 0 []) (mkTape [] 0 [1]) L
+-- 0ⁿ ε [0] ε => ε [1] ε 1ⁿ, A (cost 1)
+r2 = mkBL [0] (mkTape [] 0 []) (mkTape [] 1 []) [1]
 
--- ? 101 [0] ε => ε [1] 011 R, A (cost 6)
-r = mkR AnyWall (mkTape [1, 0, 1] 0 []) (mkTape [] 1 [0, 1, 1]) R
+-- … 0 [0] ε => ε [0] 1 L, A (cost 2)
+r = mkR NoWall (mkTape [] 1 [0]) (mkTape [] 1 [1]) R
+b = head $ batchRule A r
 
 app r tape = case macroRule r (A, tape) of
   Just (_, _, _, (_, tape)) -> Just tape
@@ -255,5 +256,22 @@ badBB3₉ = [ (A, 1) :-> (C, 0, R)
 -- Terminated      5748  (43.0%)
 -- Total          13353
 -- Average steps: 14.2  - 109.1
--- Max steps:     1088  - 28,238
+-- Max steps:     1088  - 38,238
 -- Time:          2.1s  - 8.3s
+
+badBB3₁₀ :: Machine
+badBB3₁₀ = [ (A, 1) :-> (B, 0, R)
+           , (A, 0) :-> (A, 1, L)
+           , (B, 1) :-> (B, 0, R)
+           , (B, 0) :-> (C, 1, L)
+           , (C, 0) :-> (A, 0, L) ]
+
+-- Fix cost bug
+--  Loop            2941  (22.0%)
+--  OutOfFuel       3414  (25.6%)
+--  StuckLeft       1250  ( 9.4%)
+--  Terminated      5748  (43.0%)
+--  Total          13353
+--  Average steps: 13.1   - 102.2
+--  Max steps:     735    - 34,301
+--  Time:          1.6s   - 5.3s
