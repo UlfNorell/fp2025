@@ -302,10 +302,10 @@ Tape l x r <| r' = Tape l x (r <> r')
 unbatchRule :: Int -> MacroRule -> Maybe MacroRule
 unbatchRule n (Rule (BatchR lhs rp ls rhs) s k) =
   pure $ Rule (Clause AnyWall (lhs <| CList.concatReplicate n rp)
-                              (CList.concatReplicate n ls |> rhs) R) s k
+                              (CList.concatReplicate n ls |> rhs) R) s (k * (n + 1))
 unbatchRule n (Rule (BatchL lp lhs rhs rs) s k) =
   pure $ Rule (Clause AnyWall (CList.concatReplicate n lp |> lhs)
-                              (rhs <| CList.concatReplicate n rs) L) s k
+                              (rhs <| CList.concatReplicate n rs) L) s (k * (n + 1))
 unbatchRule _ _ = Nothing
 
 -- Wall bounces -----------------------------------------------------------
