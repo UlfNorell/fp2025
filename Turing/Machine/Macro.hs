@@ -40,19 +40,48 @@ data MacroClause = Clause Wall LHS RHS Dir
   deriving (Eq, Ord, Show)
 data MacroRule = Rule MacroClause State Int
   deriving (Eq, Ord, Show)
-newtype MacroMachine = MacroMachine (Map State [MacroRule])
+
+data MacroRules = MacroRules
+  { batchedRules :: [MacroRule]
+  , normalRules  :: [MacroRule]
+  }
+  deriving Show
+
+instance Semigroup MacroRules where
+  MacroRules b n <> MacroRules b' n' = MacroRules (b ++ b') (n ++ n')
+
+instance Monoid MacroRules where
+  mempty = MacroRules [] []
+
+singleMacroRule :: MacroRule -> MacroRules
+singleMacroRule r@(Rule c _ _) = case c of
+  Clause{} -> MacroRules [] [r]
+  BatchL{} -> MacroRules [r] []
+  BatchR{} -> MacroRules [r] []
+
+zipMacroRules :: ([MacroRule] -> [MacroRule] -> [MacroRule])
+               -> MacroRules -> MacroRules -> MacroRules
+zipMacroRules f (MacroRules b r) (MacroRules b' r') = MacroRules (f b b') (f r r')
+
+newtype MacroMachine = MacroMachine (Map State MacroRules)
   deriving Show
 
 isWall :: Tape -> Wall
 isWall (Tape NilC _ _) = YesWall
 isWall _    = NoWall
 
-rules :: MacroMachine -> State -> [MacroRule]
-rules (MacroMachine m) s = fromMaybe [] $ Map.lookup s m
+rules :: MacroMachine -> State -> MacroRules
+rules (MacroMachine m) s = fromMaybe mempty $ Map.lookup s m
+
+allRules :: MacroMachine -> State -> [MacroRule]
+allRules m s = b ++ r
+  where MacroRules b r = rules m s
 
 addRule :: State -> MacroRule -> MacroMachine -> MacroMachine
-addRule s r (MacroMachine m) = MacroMachine $ Map.insertWith ins s [r] m
+addRule s r (MacroMachine m) = MacroMachine $
+    Map.insertWith (zipMacroRules ins) s (singleMacroRule r) m
   where
+    ins [] rs = rs
     ins rs1 rs2 = rs1 ++ filter (not . subsumed) rs2
       where subsumed r = any (`subsumes` r) rs1
     subsumes (Rule (Clause w lhs _ _) _ _) (Rule (Clause w' lhs' _ _) _ _) = (w, lhs) == (w', lhs')
@@ -71,7 +100,7 @@ ruleCost (Rule _ _ w) = w
 --   NoWall <> NoWall = NoWall
 
 instance Semigroup MacroMachine where
-  MacroMachine m <> MacroMachine m' = MacroMachine $ Map.unionWith (++) m m'
+  MacroMachine m <> MacroMachine m' = MacroMachine $ Map.unionWith (<>) m m'
 
 instance Monoid MacroMachine where
   mempty = MacroMachine mempty
@@ -89,7 +118,10 @@ basicRule ((_, i) :-> (s', o, d)) =
 
 fromPrimRule :: Rule -> MacroMachine
 fromPrimRule r@((s, _) :-> (s', o, d)) =
-  MacroMachine $ Map.singleton s $ batchRule s mr ++ wallBounceRule mr
+  MacroMachine $ Map.singleton s
+               $ mconcat
+               $ map singleMacroRule
+               $ batchRule s mr ++ wallBounceRule mr
   where
     mr = basicRule r
 
@@ -97,10 +129,11 @@ fromPrim :: Machine -> MacroMachine
 fromPrim = foldMap fromPrimRule
 
 toPrim :: MacroMachine -> Machine
-toPrim (MacroMachine m) = [ (s, i) :-> (s', o, d)
-                          | (s, rs) <- Map.toList m
-                          , Rule (Clause w (Tape NilC i NilC) (Tape NilC o NilC) d) s' 1 <- rs
-                          , w /= YesWall ]
+toPrim (MacroMachine m) =
+  [ (s, i) :-> (s', o, d)
+  | (s, MacroRules{..}) <- Map.toList m
+  , Rule (Clause w (Tape NilC i NilC) (Tape NilC o NilC) d) s' 1 <- normalRules
+  , w /= YesWall ]
 
 -- Combining rules --------------------------------------------------------
 
@@ -333,7 +366,7 @@ macroRule r (_, tape) = do
       pure (n, (n + 1) * w, (s1, result))
 
 macroStep :: MacroMachine -> Config -> Maybe (Int, Int, MacroRule, Config)
-macroStep m conf@(s, _) = foldr (<|>) Nothing [ macroRule r conf | r <- rules m s ]
+macroStep m conf@(s, _) = foldr (<|>) Nothing [ macroRule r conf | r <- allRules m s ]
 
 macroRun :: Int -> MacroMachine -> (Result, MacroMachine)
 macroRun = macroRun' False
@@ -357,17 +390,19 @@ resultSteps (NoTermination _ k) = k
 
 type LastRules = [(State, MacroRule)]
 
-combineStep :: LastRules
+combineStep :: Bool
+            -> LastRules
             -> MacroMachine
             -> Config
             -> Maybe (Int, LastRules, MacroMachine, Config)
-combineStep lastRules m conf@(s, Tape l _ _) =
+combineStep verbose lastRules m conf@(s, Tape l _ _) =
   case macroStep m conf of
     Nothing            -> Nothing
     Just (j, w, r, conf') ->
-      -- trace (show $ vcat (map pPrint lastRules')) $
-        Just (w, lastRules', m', conf')
+      dbg $ Just (w, lastRules', m', conf')
       where
+        dbg | verbose   = trace $ "\ESC[37m" ++ show (nest 8 $ pPrint r) ++ "\ESC[0m"
+            | otherwise = id
         newRules = do
           (s0, r0) <- lastRules
           let wrs | isWall    = wallBounceRule r
@@ -394,7 +429,7 @@ macroRun' verbose fuel m0 = goV m0 [] fuel 0 0 initialConfig
     go m _ fuel _ k _ | fuel <= 0 = (NoTermination OutOfFuel k, m)
     go m _ _ n k (H, _) = (Terminated n k, m)
     go m lastRules fuel !n !k conf@(s, _) =
-      case combineStep lastRules m conf of
+      case combineStep verbose lastRules m conf of
         Nothing                      -> error $ show $ "step failed on" <+> pPrint conf
         Just (w, lastRules, m, conf) -> goV m lastRules (fuel - w) (n + w) (k + 1) conf
 
@@ -557,7 +592,7 @@ runExplore n fuel = go fuel 0 0 initG emptyL initLs [] mempty initialConfig
     go fuel n k _ _ _ _ m _ | fuel <= 0 = pure (NoTermination OutOfFuel k, m)
     go fuel n k _ _ _ _ m (H, _) = pure (Terminated n k, m)
     go fuel !n k g l ls lastRules m conf@(s, tape) =
-      case combineStep lastRules m conf of
+      case combineStep False lastRules m conf of
         Nothing -> do
           -- Make up new rule
           (sod, g') <- genTransitions g n conf
@@ -629,7 +664,8 @@ instance Pretty MacroRule where
   pPrint (Rule c s w) = (pPrint c <> ",") <+> text (printf "%s (cost %d)" (show s) w)
 
 instance Pretty MacroMachine where
-  pPrint (MacroMachine m) = vcat [ (pPrint s <> ":") <+> vcat (map pPrint rs) | (s, rs) <- Map.toList m ]
+  pPrint (MacroMachine m) = vcat [ (pPrint s <> ":") <+> vcat (map pPrint $ b ++ r)
+                                 | (s, MacroRules b r) <- Map.toList m ]
 
 ------------------------------------------------------------------------
 -- QuickCheck properties
