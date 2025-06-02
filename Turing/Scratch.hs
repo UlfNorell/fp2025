@@ -63,19 +63,23 @@ ys = CList.fromList [0, 0, 1, 0]
 mkR :: Wall -> Tape -> Tape -> Dir -> MacroRule
 mkR w lhs rhs d = Rule (Clause w lhs rhs d) A 1
 
-mkBR :: Tape -> [Symbol] -> [Symbol] -> Tape -> MacroRule
-mkBR lhs rp ls rhs = Rule (BatchR lhs (CList.fromList rp) (CList.fromList ls) rhs) A 1
+mkBR :: Tape -> [Symbol] -> [Symbol] -> [Symbol] -> [Symbol] -> Tape -> MacroRule
+mkBR lhs (CList.fromList -> rp) (CList.fromList -> rt)
+         (CList.fromList -> lt) (CList.fromList -> ls) rhs =
+  Rule (BatchR lhs rp rt lt ls rhs 1) A 1
 
-mkBL :: [Symbol] -> Tape -> Tape -> [Symbol] -> MacroRule
-mkBL lp lhs rhs rs = Rule (BatchL (CList.fromList lp) lhs rhs (CList.fromList rs)) A 1
+mkBL :: [Symbol] -> [Symbol] -> Tape -> Tape -> [Symbol] -> [Symbol] -> MacroRule
+mkBL (CList.fromList -> lt) (CList.fromList -> lp) lhs
+     rhs (CList.fromList -> rs) (CList.fromList -> rt) =
+  Rule (BatchL lt lp lhs rhs rs rt 1) A 1
+
+tape = mkTape [1, 1, 1, 1, 1] 0 ([0, 1, 0, 0, 1, 0, 0, 1] ++ replicate 14 0 ++ [1])
+r1 = mkR AnyWall (mkTape [] 0 [0, 1, 0, 0, 1, 0, 0, 1, 0, 0, 0]) (mkTape [] 0 [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]) L
+r2 = mkBL [] [1] (mkTape [] 1 []) (mkTape [] 0 []) [0] []
+[r3] = combineRules r1 r2
 
 -- … 0 [0] ε => ε [0] 1 L, A (cost 2)
-r1 = mkR AnyWall (mkTape [0] 0 []) (mkTape [] 0 [1]) L
--- 0ⁿ ε [0] ε => ε [1] ε 1ⁿ, A (cost 1)
-r2 = mkBL [0] (mkTape [] 0 []) (mkTape [] 1 []) [1]
-
--- … 0 [0] ε => ε [0] 1 L, A (cost 2)
-r = mkR AnyWall (mkTape [] 1 [0]) (mkTape [] 1 [1]) R
+r = mkR AnyWall (mkTape [] 1 [0, 1]) (mkTape [0] 0 [1]) R
 b = head $ batchRule A r
 
 app r tape = case macroRule r (A, tape) of
@@ -285,3 +289,28 @@ badBB3₁₀ = [ (A, 1) :-> (B, 0, R)
 --  Average steps: 12.8   - 102.0
 --  Max steps:     748    - 34,314
 --  Time:          2.5s   - 6.1s
+
+-- Fix bugs?
+--  Loop            2941  (22.0%)
+--  OutOfFuel       3414  (25.6%)
+--  StuckLeft       1250  ( 9.4%)
+--  Terminated      5748  (43.0%)
+--  Total          13353
+--  Average steps: 13.2   - 104.8
+--  Max steps:     739    - 34,302
+--  Time:          1.5s   - 5.1s
+
+-- Generalized batch rules with extra bits after repeats
+-- WRONG
+--  Loop            2941  (22.0%)
+--  OutOfFuel       3414  (25.6%)
+--  StuckLeft       1250  ( 9.4%)
+--  Terminated      5748  (43.0%)
+--  Total          13353
+--  Average steps: 14.3   -
+--  Max steps:     809    -
+--  Time:          2.1s   -
+
+bug :: Machine
+bug = [(A,1) :-> (A,0,L), (A,0) :-> (B,1,R), (B,1) :-> (H,0,L),
+       (B,0) :-> (C,1,R), (C,1) :-> (A,1,R), (C,0) :-> (A,1,L)]

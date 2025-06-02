@@ -32,10 +32,15 @@ primStep :: Machine -> Config -> Maybe Config
 primStep rs conf = foldr (<|>) Nothing [ primRule r conf | r <- rs ]
 
 primRun :: Bool -> Int -> Machine -> Maybe (Int, Tape)
-primRun verbose fuel m = go fuel 0 initialConfig
+primRun verbose fuel m = case primRun' verbose fuel m initialConfig of
+  (n, (H, tape)) -> Just (n, tape)
+  _              -> Nothing
+
+primRun' :: Bool -> Int -> Machine -> Config -> (Int, Config)
+primRun' verbose fuel m = go fuel 0
   where
-    go 0 _ _ = Nothing
-    go _ n (H, tape) = pure (n, tape)
+    go 0 n conf = (n, conf)
+    go _ n conf@(H, _) = (n, conf)
     go fuel !n conf =
       case primStep m conf of
         Nothing   -> error $ show $ text "step failed on" <+> pPrint conf
