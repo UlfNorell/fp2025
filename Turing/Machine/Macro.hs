@@ -403,7 +403,7 @@ combineStep verbose lastRules m conf@(s, Tape l _ _) =
   case macroStep m conf of
     Nothing            -> Nothing
     Just (j, w, rUsed, conf') ->
-      dbg $ Just (w, lastRules', m', conf')
+      dbg $ Just (w, [(s, r)], m', conf')
       where
         dbg | verbose   = trace $ "\ESC[37m" ++ show (nest 8 $ pPrint r) ++ "\ESC[0m"
             | otherwise = id
@@ -414,7 +414,6 @@ combineStep verbose lastRules m conf@(s, Tape l _ _) =
           (s0, r0) <- lastRules
           [ (s0, r') | r' <- concatMap (combine s0 r0) (r : urs) ]
         m' = foldr addNew m newRules
-        lastRules' = (s, r) : newRules
         primM = toPrim m
         combine s0 r1 r2 = map (validate s0 r1 r2) rs
           where

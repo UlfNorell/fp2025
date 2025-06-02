@@ -103,7 +103,6 @@ app r tape = case macroRule r (A, tape) of
 -- Strip duplicate batched rules
 --  Time:            2.5s
 
-badBB3₁ :: Machine
 badBB3₁ = [ (A, 0) :-> (B, 1, L)
           , (A, 1) :-> (A, 0, R)
           , (B, 0) :-> (C, 0, L)
@@ -115,7 +114,6 @@ badBB3₁ = [ (A, 0) :-> (B, 1, L)
 --  Average steps:  31.4
 --  Max steps:      4009
 
-badBB3₂ :: Machine
 badBB3₂ = [ (A, 0) :-> (B, 1, L)
           , (A, 1) :-> (A, 0, R)
           , (B, 0) :-> (C, 0, L)
@@ -143,7 +141,6 @@ badBB3₂ = [ (A, 0) :-> (B, 1, L)
 -- Max steps:     2229
 -- Time:         61m42s
 
-badBB3₃ :: Machine
 badBB3₃ = [ (A, 1) :-> (B, 1, L)
           , (A, 0) :-> (A, 1, L)
           , (B, 0) :-> (C, 1, L)
@@ -170,7 +167,6 @@ badBB3₃ = [ (A, 1) :-> (B, 1, L)
 --  Max steps:     1181
 --  Time:          2.8s
 
-badBB3₄ :: Machine
 badBB3₄ = [ (A, 1) :-> (B, 0, R)
           , (A, 0) :-> (A, 1, L)
           , (B, 1) :-> (B, 0, R)
@@ -187,7 +183,6 @@ badBB3₄ = [ (A, 1) :-> (B, 0, R)
 --  Max steps:     2012
 --  Time:          1.3s
 
-badBB3₅ :: Machine
 badBB3₅ = [ (A, 1) :-> (A, 1, R)
           , (A, 0) :-> (B, 0, R)
           , (B, 1) :-> (C, 1, L)
@@ -204,7 +199,6 @@ badBB3₅ = [ (A, 1) :-> (A, 1, R)
 --  Max steps:     2010
 --  Time:          1.3s
 
-badBB3₆ :: Machine
 badBB3₆ = [ (A, 1) :-> (B, 1, L)
           , (A, 0) :-> (A, 1, L)
           , (B, 1) :-> (C, 1, L)
@@ -222,14 +216,12 @@ badBB3₆ = [ (A, 1) :-> (B, 1, L)
 --  Time:          1.3s
 
 -- Quite an interesting counting machine
-badBB3₇ :: Machine
 badBB3₇ = [ (A, 1) :-> (B, 0, R)
           , (A, 0) :-> (A, 1, L)
           , (B, 1) :-> (B, 0, R)
           , (B, 0) :-> (C, 1, L)
           , (C, 0) :-> (A, 0, L) ]
 
-badBB3₈ :: Machine
 badBB3₈ = [ (A, 1) :-> (C, 1, R)
           , (A, 0) :-> (B, 1, L)
           , (B, 1) :-> (C, 1, L)
@@ -246,7 +238,6 @@ badBB3₈ = [ (A, 1) :-> (C, 1, R)
 --  Max steps:     1088 - 38,511
 --  Time:          2.1s - 8.7s
 
-badBB3₉ :: Machine
 badBB3₉ = [ (A, 1) :-> (C, 0, R)
           , (A, 0) :-> (B, 1, L)
           , (B, 1) :-> (C, 0, L)
@@ -263,7 +254,6 @@ badBB3₉ = [ (A, 1) :-> (C, 0, R)
 -- Max steps:     1088  - 38,238
 -- Time:          2.1s  - 8.3s
 
-badBB3₁₀ :: Machine
 badBB3₁₀ = [ (A, 1) :-> (B, 0, R)
            , (A, 0) :-> (A, 1, L)
            , (B, 1) :-> (B, 0, R)
@@ -311,6 +301,31 @@ badBB3₁₀ = [ (A, 1) :-> (B, 0, R)
 --  Max steps:     809    -
 --  Time:          2.1s   -
 
-bug :: Machine
 bug = [(A,1) :-> (A,0,L), (A,0) :-> (B,1,R), (B,1) :-> (H,0,L),
        (B,0) :-> (C,1,R), (C,1) :-> (A,1,R), (C,0) :-> (A,1,L)]
+
+-- Correct batch rule combination
+--  Loop            2941  (22.0%)
+--  OutOfFuel       3414  (25.6%)
+--  StuckLeft       1250  ( 9.4%)
+--  Terminated      5748  (43.0%)
+--  Total          13353
+--  Average steps: 12.7   - 92.7
+--  Max steps:     686    - 25,721  (badBB3₁₀ - badBB3₁₁)
+--  Time:          1.6s   - 4.9s
+
+badBB3₁₁ = [ (A, 1) :-> (B, 1, L)
+           , (A, 0) :-> (A, 1, L)
+           , (B, 0) :-> (C, 1, L)
+           , (B, 1) :-> (B, 0, R)
+           , (C, 0) :-> (A, 0, L) ]
+
+-- Only combine with previous rule (i.e. don't stack combines until combined rule is used)
+--  Loop            2940  (22.0%)
+--  OutOfFuel       3415  (25.6%)
+--  StuckLeft       1250  ( 9.4%)
+--  Terminated      5748  (43.0%)
+--  Total          13353
+--  Average steps: 14.1   - 94.3
+--  Max steps:     686    - 25,565  (badBB3₁₀ - badBB3₁₁)
+--  Time:          0.2s   - 3.0s
